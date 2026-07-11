@@ -2,10 +2,10 @@ package testkit
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/dangernoodle-io/mcpkit/jsonutil"
 	"github.com/dangernoodle-io/mcpkit/mcpx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,12 +14,12 @@ import (
 // ResultText concatenates the text content of a CallToolResult.
 var ResultText = mcpx.ResultText
 
-// DecodeToolResult json-unmarshals a tool result's text content into T,
-// failing the test on decode error.
+// DecodeToolResult json-unmarshals a tool result's text content into T via
+// jsonutil.Unmarshal, failing the test on decode error.
 func DecodeToolResult[T any](t testing.TB, res *mcpx.CallToolResult) T {
 	t.Helper()
 	var out T
-	err := json.Unmarshal([]byte(mcpx.ResultText(res)), &out)
+	err := jsonutil.Unmarshal([]byte(mcpx.ResultText(res)), &out)
 	require.NoError(t, err, "decode tool result")
 	return out
 }
