@@ -33,11 +33,20 @@ func (r *Registrar) Host() host.Adapter {
 }
 
 // AddTool registers a typed tool handler through r. This is the only
-// tool-registration chokepoint capabilities should use; MC-8 fills in
-// annotations/risk/recover behind this same signature additively.
+// tool-registration chokepoint capabilities should use; MC-8 wraps every
+// handler in a panic-recover here so a panicking tool surfaces as an
+// IsError result instead of crashing the server process. Annotations/risk
+// remain future-additive at this same chokepoint.
 func AddTool[In, Out any](r *Registrar, t *mcpx.Tool, h mcpx.Handler[In, Out]) {
-	// MC-8: annotations/risk/recover hook here
-	mcpx.AddTool(r.server, t, h)
+	wrapped := func(ctx context.Context, req *mcpx.CallToolRequest, in In) (res *mcpx.CallToolResult, out Out, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("tool %q panicked: %v", t.Name, p)
+			}
+		}()
+		return h(ctx, req, in)
+	}
+	mcpx.AddTool(r.server, t, wrapped)
 }
 
 // Capability is a self-contained unit of server functionality, attached to
