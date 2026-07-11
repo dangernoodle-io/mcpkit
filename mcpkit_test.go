@@ -121,6 +121,59 @@ func TestAddToolTransparentOnHappyPath(t *testing.T) {
 	require.Equal(t, "hello, mcpkit!", out.Greeting)
 }
 
+// TestNewWithInstructions proves Info.Instructions composes through New
+// without error; the wire-level assertion that the string reaches the
+// client lives in mcpx (the sole seam over go-sdk's InitializeResult).
+func TestNewWithInstructions(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "instructed", Version: "0.0.1", Instructions: "guide"}, generic.New(), helloCap{})
+	require.NoError(t, err)
+	require.NotNil(t, app)
+}
+
+type annotatedIn struct{}
+
+type annotatedOut struct {
+	OK bool `json:"ok"`
+}
+
+type annotatedCap struct{}
+
+func (annotatedCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{
+		Name:        "annotated",
+		Description: "carries tool annotations",
+		Annotations: &mcpx.ToolAnnotations{
+			ReadOnlyHint:    true,
+			DestructiveHint: mcpx.BoolPtr(true),
+		},
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ annotatedIn) (*mcpx.CallToolResult, annotatedOut, error) {
+		return nil, annotatedOut{OK: true}, nil
+	})
+	return nil
+}
+
+// TestToolAnnotationsRoundTrip proves a tool registered with
+// mcpx.ToolAnnotations (built via the mcpx.BoolPtr helper, no go-sdk import
+// required by the consumer) carries those annotations through tools/list —
+// the path ouroboros's cutover will rely on.
+func TestToolAnnotationsRoundTrip(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "annotated-e2e", Version: "0.0.1"}, generic.New(), annotatedCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	res, err := h.ListTools(context.Background())
+	require.NoError(t, err)
+	require.Len(t, res.Tools, 1)
+
+	tool := res.Tools[0]
+	require.Equal(t, "annotated", tool.Name)
+	require.NotNil(t, tool.Annotations)
+	require.True(t, tool.Annotations.ReadOnlyHint)
+	require.NotNil(t, tool.Annotations.DestructiveHint)
+	require.True(t, *tool.Annotations.DestructiveHint)
+}
+
 // TestAppHTTPHandler proves App.HTTPHandler delegates to the composed
 // server's real streamable-HTTP handler (the mcpx protocol round trip is
 // covered in mcpx/http_test.go, which alone is allowed to import go-sdk).

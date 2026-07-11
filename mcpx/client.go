@@ -71,6 +71,12 @@ func (s *ClientSession) ListTools(ctx context.Context) (*ListToolsResult, error)
 	return s.sess.ListTools(ctx, &mcp.ListToolsParams{})
 }
 
+// InitializeResult returns the server's response to this session's
+// initialize handshake, including any Instructions the server advertised.
+func (s *ClientSession) InitializeResult() *InitializeResult {
+	return s.sess.InitializeResult()
+}
+
 // Close closes the underlying session.
 func (s *ClientSession) Close() error {
 	return s.sess.Close()

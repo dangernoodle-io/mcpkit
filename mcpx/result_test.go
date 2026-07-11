@@ -36,7 +36,7 @@ func TestResultTextRoundTrip(t *testing.T) {
 // (e.g. the MC-8 recover hook, which has no error to return through the
 // generic AddTool signature after a panic).
 func TestHandlerErrorBecomesIsErrorResult(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "err-server", Version: "0.0.1"})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "err-server", Version: "0.0.1"}, "")
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "boom",
 	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {

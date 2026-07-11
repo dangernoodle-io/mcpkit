@@ -16,6 +16,10 @@ import (
 type Info struct {
 	Name    string
 	Version string
+
+	// Instructions is optional MCP server instructions advertised to
+	// clients (tool-selection guidance); empty = none.
+	Instructions string
 }
 
 // Registrar is what a Capability's Attach method uses to register itself
@@ -68,7 +72,7 @@ func New(info Info, h host.Adapter, caps ...Capability) (*App, error) {
 		return nil, fmt.Errorf("mcpkit: host adapter must not be nil")
 	}
 
-	srv := mcpx.NewServer(mcpx.Implementation{Name: info.Name, Version: info.Version})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: info.Name, Version: info.Version}, info.Instructions)
 	r := &Registrar{server: srv, host: h}
 
 	for _, c := range caps {
