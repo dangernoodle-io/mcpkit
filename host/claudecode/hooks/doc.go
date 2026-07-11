@@ -1,0 +1,65 @@
+// Package hooks implements mcpkit's Claude Code hook-command adapter: typed
+// per-event payloads, a fail-open Response union that marshals the correct
+// Claude Code hook-output JSON shape, and a builder-style Registry + cobra
+// command factory that turns registered handlers into a `hooks` command
+// group (one leaf per registered event).
+//
+// # Fail-open contract
+//
+// Every leaf command's RunE always returns nil, even when stdin fails to
+// decode or the registered Handler panics or returns an error: FailOpen
+// recovers a panic and swallows a returned error, logging either to stderr.
+// A hook must never block or fail the Claude Code session it's wired into
+// — "fail open", not "fail closed" (mirrors mcpkit.AddTool's panic-recover
+// chokepoint on the tool-call side).
+//
+// # Response union
+//
+// A Handler returns a Response — Block, AdditionalContext, PlainText, or
+// SystemMessage — whose zero value is silent allow (no stdout write). An
+// unexported write method is the single chokepoint that marshals the
+// correct Claude Code JSON shape for the invoking event, via
+// jsonutil.Marshal:
+//
+//   - Block             -> {"decision":"block","reason":<Block>}
+//   - AdditionalContext -> {"hookSpecificOutput":{"hookEventName":<event>,"additionalContext":<AdditionalContext>}}
+//     (write emits this shape for whatever event set it; CC documents
+//     honoring it on UserPromptSubmit and SessionStart, and may accept it
+//     on other events too — the consumer decides where it's meaningful)
+//   - PlainText         -> bare stdout text, no JSON wrapper (CC's documented
+//     plain-text convention on UserPromptSubmit/SessionStart; other events
+//     may or may not treat bare stdout the same way)
+//   - SystemMessage     -> merged as a top-level "systemMessage" sibling key
+//
+// Precedence when more than one field is set: Block > AdditionalContext >
+// PlainText > SystemMessage-alone. SystemMessage may accompany Block or
+// AdditionalContext (both already JSON) as a sibling key. PlainText cannot
+// carry a JSON systemMessage sibling — bare text and structured JSON are
+// mutually exclusive on the wire — so if both PlainText and SystemMessage
+// are set, SystemMessage wins (emitted as {"systemMessage":...}) and
+// PlainText is dropped; callers should not set both.
+//
+// # Usage
+//
+//	reg := hooks.NewRegistry().
+//		Stop(func(ctx context.Context, in io.Reader, p hooks.StopPayload) hooks.Response {
+//			return hooks.Response{} // silent allow
+//		}).
+//		UserPromptSubmit(func(ctx context.Context, in io.Reader, p hooks.UserPromptSubmitPayload) hooks.Response {
+//			return hooks.Response{AdditionalContext: "relevant KB notes..."}
+//		})
+//
+//	cmd := hooks.Command(reg) // the `hooks` command group, one leaf per registered event
+//
+// # Events
+//
+//	Event             Command              Payload
+//	Stop              stop                 StopPayload
+//	SubagentStop      subagent-stop        SubagentStopPayload
+//	SubagentStart     subagent-start       SubagentStartPayload
+//	UserPromptSubmit  user-prompt-submit   UserPromptSubmitPayload
+//	PreToolUse        pre-tool-use         PreToolUsePayload
+//	PostToolUse       post-tool-use        PostToolUsePayload
+//	PreCompact        pre-compact          PreCompactPayload
+//	SessionStart      session-start        SessionStartPayload
+package hooks
