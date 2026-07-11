@@ -1,0 +1,99 @@
+package testkit_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/dangernoodle-io/mcpkit"
+	"github.com/dangernoodle-io/mcpkit/host/generic"
+	"github.com/dangernoodle-io/mcpkit/mcpx"
+	"github.com/dangernoodle-io/mcpkit/testkit"
+	"github.com/stretchr/testify/require"
+)
+
+type pingOut struct {
+	Reply string `json:"reply"`
+}
+
+type pingCap struct{}
+
+func (pingCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{
+		Name:        "ping",
+		Description: "replies pong",
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, pingOut, error) {
+		return nil, pingOut{Reply: "pong"}, nil
+	})
+	return nil
+}
+
+func TestHarness(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "harness-test", Version: "0.0.1"}, generic.New(), pingCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	testkit.AssertToolSet(t, h, "ping")
+
+	res, err := h.CallTool(context.Background(), "ping", nil)
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	out := testkit.DecodeToolResult[pingOut](t, res)
+	require.Equal(t, "pong", out.Reply)
+}
+
+type workOut struct {
+	Done bool `json:"done"`
+}
+
+type workCap struct{}
+
+func (workCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{
+		Name:        "work",
+		Description: "emits a progress notification keyed to the caller's token, then completes",
+	}, func(ctx context.Context, req *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, workOut, error) {
+		if err := mcpx.NotifyProgress(ctx, req, "halfway", 50, 100); err != nil {
+			return nil, workOut{}, err
+		}
+		return nil, workOut{Done: true}, nil
+	})
+	return nil
+}
+
+// TestHarnessProgress proves the progress-notification round trip is
+// genuinely keyed: the client sets a progress token on the request, the
+// server's handler emits a notification carrying that same token (via
+// mcpx.NotifyProgress, reading it back off the request), and the harness's
+// OnProgress hook files it under that token for ProgressEvents to surface.
+func TestHarnessProgress(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "progress-test", Version: "0.0.1"}, generic.New(), workCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	const token = "work-token-1"
+
+	res, err := h.CallToolWithProgressToken(context.Background(), "work", nil, token)
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	testkit.EventuallyContains(t, 2*time.Second, 10*time.Millisecond, func() []string {
+		var msgs []string
+		for _, ev := range h.ProgressEvents(token) {
+			msgs = append(msgs, ev.Message)
+		}
+		return msgs
+	}, "halfway")
+
+	events := h.ProgressEvents(token)
+	require.Len(t, events, 1)
+	require.Equal(t, token, events[0].Token)
+	require.InDelta(t, 50, events[0].Progress, 0.001)
+	require.InDelta(t, 100, events[0].Total, 0.001)
+
+	// A different token must not see this call's events.
+	require.Empty(t, h.ProgressEvents("unrelated-token"))
+}
