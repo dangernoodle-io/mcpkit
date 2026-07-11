@@ -3,6 +3,8 @@ package mcpkit_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/dangernoodle-io/mcpkit"
@@ -60,4 +62,25 @@ func TestEndToEnd(t *testing.T) {
 func TestNewNilHost(t *testing.T) {
 	_, err := mcpkit.New(mcpkit.Info{Name: "e2e", Version: "0.0.1"}, nil)
 	require.Error(t, err)
+}
+
+// TestAppHTTPHandler proves App.HTTPHandler delegates to the composed
+// server's real streamable-HTTP handler (the mcpx protocol round trip is
+// covered in mcpx/http_test.go, which alone is allowed to import go-sdk).
+// A bare GET without the streamable-HTTP Accept header is go-sdk's
+// documented rejection for a malformed streamable request: 400 with a
+// text/event-stream mention in the body. Asserting that exact behavior
+// (rather than just a non-zero status) catches a broken/no-op delegate.
+func TestAppHTTPHandler(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "http-e2e", Version: "0.0.1"}, generic.New(), helloCap{})
+	require.NoError(t, err)
+
+	h := app.HTTPHandler()
+	require.NotNil(t, h)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "text/event-stream")
 }

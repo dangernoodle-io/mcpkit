@@ -6,6 +6,7 @@ package mcpkit
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/dangernoodle-io/mcpkit/host"
 	"github.com/dangernoodle-io/mcpkit/mcpx"
@@ -80,4 +81,12 @@ func (a *App) Run(ctx context.Context) error {
 // other in-process harnesses.
 func (a *App) Connect(ctx context.Context, t mcpx.Transport) (*mcpx.Session, error) {
 	return a.server.Connect(ctx, t)
+}
+
+// HTTPHandler exposes the composed server over streamable-HTTP for the
+// consumer to mount. mcpkit is path-agnostic: the returned handler is bare
+// and MCP-over-HTTP is entirely opt-in — the consumer decides whether and
+// where to mount it.
+func (a *App) HTTPHandler(opts ...mcpx.HTTPOption) http.Handler {
+	return a.server.HTTPHandler(opts...)
 }
