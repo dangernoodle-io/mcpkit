@@ -5,10 +5,11 @@
 //
 // mcpkit owns transport selection, running the server, and graceful
 // shutdown; the consumer extends the server command via Server.App plus the
-// OnStart/OnShutdown hooks, Flags, and one-level Subcommands. Use
-// UseAsDefault to make a bare invocation of the consumer's binary (no
-// subcommand given) run the server command directly — useful for a Claude
-// Code plugin launched without an explicit subcommand.
+// OnStart/OnShutdown hooks, Flags, and Subcommands (arbitrary cobra
+// subtrees — see CommandProvider/MountProviders for the uniform mounting
+// API). Use UseAsDefault to make a bare invocation of the consumer's binary
+// (no subcommand given) run the server command directly — useful for a
+// Claude Code plugin launched without an explicit subcommand.
 //
 // cobra auto-provides a `completion` command on any root with subcommands,
 // so this package does not add one.
@@ -53,8 +54,9 @@ type Server struct {
 	Flags func(*pflag.FlagSet)
 
 	// Subcommands are attached under the built command via AddCommand.
-	// Attach leaf subcommands only — grandchildren are not supported and
-	// are not enforced here.
+	// Each entry may carry its own subtree of any depth — cobra's
+	// AddCommand nests freely, so grandchildren (and deeper) work the same
+	// as leaves; nothing here flattens them.
 	Subcommands []*cobra.Command
 }
 

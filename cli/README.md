@@ -7,10 +7,11 @@ VersionCmd) as subcommands of it.
 
 mcpkit owns transport selection, running the server, and graceful
 shutdown; the consumer extends the server command via Server.App plus the
-OnStart/OnShutdown hooks, Flags, and one-level Subcommands. Use
-UseAsDefault to make a bare invocation of the consumer's binary (no
-subcommand given) run the server command directly — useful for a Claude
-Code plugin launched without an explicit subcommand.
+OnStart/OnShutdown hooks, Flags, and Subcommands (arbitrary cobra
+subtrees — see CommandProvider/MountProviders for the uniform mounting
+API). Use UseAsDefault to make a bare invocation of the consumer's binary
+(no subcommand given) run the server command directly — useful for a
+Claude Code plugin launched without an explicit subcommand.
 
 cobra auto-provides a `completion` command on any root with subcommands,
 so this package does not add one.
