@@ -11,3 +11,14 @@ jobs:
   verify:
     uses: dangernoodle-io/.github/.github/workflows/go-build.yml@main
     secrets: inherit
+
+  docs-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - run: make docs-check

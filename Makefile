@@ -1,4 +1,4 @@
-.PHONY: build test cover lint tidy check
+.PHONY: build test cover lint tidy check docs docs-check
 
 .DEFAULT_GOAL := build
 
@@ -19,3 +19,9 @@ tidy:
 	go mod tidy
 
 check: test lint
+
+docs: ## regenerate per-package READMEs
+	go run ./cmd/docsgen
+
+docs-check: docs ## fail if generated READMEs drift
+	git diff --exit-code -- '**/README.md' ':(exclude)README.md'
