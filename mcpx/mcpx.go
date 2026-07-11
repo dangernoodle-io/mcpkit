@@ -27,6 +27,21 @@ type CallToolResult = mcp.CallToolResult
 // ListToolsResult is the response to a tools/list request.
 type ListToolsResult = mcp.ListToolsResult
 
+// InitializeResult is the server's response to a client's initialize
+// request, including the Instructions string a NewServer caller set.
+type InitializeResult = mcp.InitializeResult
+
+// ToolAnnotations are hints about a tool's behavior (destructive,
+// idempotent, open-world, read-only), surfaced to clients via Tool.Annotations.
+// Type-aliased here so a caller can set them without importing go-sdk.
+type ToolAnnotations = mcp.ToolAnnotations
+
+// BoolPtr returns a pointer to b, for populating the *bool hint fields on
+// ToolAnnotations (DestructiveHint, OpenWorldHint) without importing go-sdk.
+func BoolPtr(b bool) *bool {
+	return &b
+}
+
 // Handler mirrors go-sdk's typed tool handler shape.
 type Handler[In, Out any] = mcp.ToolHandlerFor[In, Out]
 
@@ -35,9 +50,17 @@ type Server struct {
 	srv *mcp.Server
 }
 
-// NewServer constructs a Server advertising the given implementation.
-func NewServer(impl Implementation) *Server {
-	return &Server{srv: mcp.NewServer(&impl, nil)}
+// NewServer constructs a Server advertising the given implementation. If
+// instructions is non-empty, it is advertised to clients in the
+// InitializeResult (see InitializeResult.Instructions) as guidance on how to
+// use the server and its tools; an empty string preserves the prior
+// behavior of passing nil ServerOptions.
+func NewServer(impl Implementation, instructions string) *Server {
+	var opts *mcp.ServerOptions
+	if instructions != "" {
+		opts = &mcp.ServerOptions{Instructions: instructions}
+	}
+	return &Server{srv: mcp.NewServer(&impl, opts)}
 }
 
 // AddTool registers a typed tool handler on s. It is a top-level function,

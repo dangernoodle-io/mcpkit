@@ -18,7 +18,7 @@ type echoOut struct {
 }
 
 func TestServerClientRoundTrip(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "test-server", Version: "0.0.1"})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "test-server", Version: "0.0.1"}, "")
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name:        "echo",
 		Description: "echoes text back",
@@ -54,7 +54,7 @@ func TestServerClientRoundTrip(t *testing.T) {
 // off req via ProgressToken/NotifyProgress, and the client's OnProgress
 // callback receives that same token.
 func TestNotifyProgress(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "progress-server", Version: "0.0.1"})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "progress-server", Version: "0.0.1"}, "")
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "work",
 	}, func(ctx context.Context, req *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -102,6 +102,53 @@ func TestNotifyProgress(t *testing.T) {
 	}
 }
 
+// TestServerInstructions proves the instructions string passed to NewServer
+// reaches the client via the InitializeResult, and that a non-empty value
+// composes without error.
+func TestServerInstructions(t *testing.T) {
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "instructions-server", Version: "0.0.1"}, "call echo before anything else")
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	ctx := context.Background()
+	sess, err := srv.Connect(ctx, serverT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "instructions-client", Version: "0.0.1"}, nil)
+	clientSess, err := client.Connect(ctx, clientT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = clientSess.Close() })
+
+	res := clientSess.InitializeResult()
+	require.NotNil(t, res)
+	require.Equal(t, "call echo before anything else", res.Instructions)
+}
+
+// TestServerNoInstructions proves NewServer(impl, "") is behaviorally
+// identical to the prior single-arg NewServer: no instructions are
+// advertised (empty string, the nil-ServerOptions path), and the server
+// still composes and serves normally.
+func TestServerNoInstructions(t *testing.T) {
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "no-instructions-server", Version: "0.0.1"}, "")
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	ctx := context.Background()
+	sess, err := srv.Connect(ctx, serverT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "no-instructions-client", Version: "0.0.1"}, nil)
+	clientSess, err := client.Connect(ctx, clientT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = clientSess.Close() })
+
+	res := clientSess.InitializeResult()
+	require.NotNil(t, res)
+	require.Empty(t, res.Instructions)
+}
+
 func TestStdioTransport(t *testing.T) {
 	// Stdio just needs to construct a non-nil Transport; exercising it over
 	// real stdin/stdout belongs to examples/minimal, not unit tests.
@@ -112,7 +159,7 @@ func TestStdioTransport(t *testing.T) {
 // (*Server).Run: it must block while the client is connected, and return
 // cleanly once the client disconnects.
 func TestRunUnwindsOnClientClose(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "run-server", Version: "0.0.1"})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "run-server", Version: "0.0.1"}, "")
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "noop",
 	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -148,7 +195,7 @@ func TestRunUnwindsOnClientClose(t *testing.T) {
 // counterpart to Run: it must block while the client is connected, and
 // return once the client closes.
 func TestSessionWait(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "wait-server", Version: "0.0.1"})
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "wait-server", Version: "0.0.1"}, "")
 
 	serverT, clientT := mcpx.InMemoryPair()
 
