@@ -1,7 +1,7 @@
-// Package xdgpath resolves per-application config/cache directories
-// following the XDG Base Directory precedence, forced to ~/.config and
-// ~/.cache on every platform (including macOS, which otherwise defaults to
-// ~/Library/Application Support and ~/Library/Caches).
+// Package xdgpath resolves per-application config/cache/data directories
+// following the XDG Base Directory precedence, forced to ~/.config,
+// ~/.cache, and ~/.local/share on every platform (including macOS, which
+// otherwise defaults to ~/Library/Application Support and ~/Library/Caches).
 //
 // Resolution order (most-specific first), for config:
 //
@@ -10,6 +10,7 @@
 //  3. ~/.config, joined with app.
 //
 // Cache mirrors this with $<APP>_CACHE_DIR / $XDG_CACHE_HOME / ~/.cache.
+// Data mirrors this with $<APP>_DATA_DIR / $XDG_DATA_HOME / ~/.local/share.
 // Per the XDG Base Directory spec, a $XDG_* value that is not an absolute
 // path is treated as unset.
 package xdgpath
@@ -31,6 +32,11 @@ func CacheDir(app string) string {
 	return resolve(app, "CACHE_DIR", "XDG_CACHE_HOME", ".cache")
 }
 
+// DataDir returns the resolved data directory for app.
+func DataDir(app string) string {
+	return resolve(app, "DATA_DIR", "XDG_DATA_HOME", filepath.Join(".local", "share"))
+}
+
 // ConfigFile returns the path to name inside app's config directory.
 func ConfigFile(app, name string) string {
 	return filepath.Join(ConfigDir(app), name)
@@ -41,10 +47,15 @@ func CacheFile(app, name string) string {
 	return filepath.Join(CacheDir(app), name)
 }
 
-// resolve implements the shared precedence for both ConfigDir and CacheDir.
-// appSuffix is "CONFIG_DIR" or "CACHE_DIR"; xdgVar is the XDG_* env var
-// name; homeSub is the fallback subdirectory of the user's home directory
-// ("." + "config"/"cache").
+// DataFile returns the path to name inside app's data directory.
+func DataFile(app, name string) string {
+	return filepath.Join(DataDir(app), name)
+}
+
+// resolve implements the shared precedence for ConfigDir, CacheDir, and
+// DataDir. appSuffix is "CONFIG_DIR", "CACHE_DIR", or "DATA_DIR"; xdgVar is
+// the XDG_* env var name; homeSub is the fallback subdirectory of the
+// user's home directory ("." + "config"/"cache", or ".local/share").
 func resolve(app, appSuffix, xdgVar, homeSub string) string {
 	appEnv := envName(app) + "_" + appSuffix
 	if v := os.Getenv(appEnv); v != "" && filepath.IsAbs(v) {
