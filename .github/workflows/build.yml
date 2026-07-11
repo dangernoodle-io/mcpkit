@@ -22,3 +22,10 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - run: make docs-check
+
+  seam-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - run: make seam-check
