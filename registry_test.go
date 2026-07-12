@@ -97,3 +97,59 @@ func TestAppFinalizeIdempotent(t *testing.T) {
 		app.finalize()
 	})
 }
+
+// TestRegistryFinalizeGateExcludesBlockedFromByGroup proves the MC-44 gate
+// predicate in finalize is a true hard block: a gated-off tool's register
+// closure is never invoked (never reaches the live server) and its name
+// never lands in byGroup, so a startup-blocked tool can't later be
+// resurrected by MC-45's runtime Unlock (which will only ever see byGroup).
+func TestRegistryFinalizeGateExcludesBlockedFromByGroup(t *testing.T) {
+	registered := map[string]bool{}
+
+	reg := &registry{
+		gate: gateState{
+			readOnly:      true,
+			blockedGroups: map[string]bool{"x": true},
+		},
+	}
+	reg.add(pendingTool{name: "ro", group: "a", risk: ReadOnly, register: func(_ *mcpx.Server) { registered["ro"] = true }})
+	reg.add(pendingTool{name: "write", group: "a", risk: Write, register: func(_ *mcpx.Server) { registered["write"] = true }})
+	reg.add(pendingTool{name: "ro-x", group: "x", risk: ReadOnly, register: func(_ *mcpx.Server) { registered["ro-x"] = true }})
+
+	reg.finalize(nil)
+
+	require.True(t, registered["ro"], "an allowed tool must still register")
+	require.False(t, registered["write"], "ReadOnlyMode must gate off a non-ReadOnly tool before register runs")
+	require.False(t, registered["ro-x"], "BlockGroups must gate off a blocked-group tool before register runs")
+
+	require.Equal(t, []string{"ro"}, reg.byGroup["a"])
+	require.Empty(t, reg.byGroup["x"], "byGroup must not track a gated-off tool")
+}
+
+// TestRegistryApplyGateAfterStartedErrors proves applyGate/blockGroups are
+// pre-start-only: once finalize has run, mutating the gate can no longer
+// affect the already-registered set, so both return an error instead of a
+// silent no-op.
+func TestRegistryApplyGateAfterStartedErrors(t *testing.T) {
+	reg := &registry{}
+	reg.finalize(nil)
+
+	err := reg.applyGate(ReadOnlyMode())
+	require.Error(t, err)
+
+	err = reg.blockGroups("x")
+	require.Error(t, err)
+}
+
+// TestRegistryApplyGateBeforeStarted proves applyGate/blockGroups succeed
+// pre-finalize and actually mutate reg.gate.
+func TestRegistryApplyGateBeforeStarted(t *testing.T) {
+	reg := &registry{}
+
+	require.NoError(t, reg.applyGate(ReadOnlyMode()))
+	require.True(t, reg.gate.readOnly)
+
+	require.NoError(t, reg.blockGroups("x", "y"))
+	require.True(t, reg.gate.blockedGroups["x"])
+	require.True(t, reg.gate.blockedGroups["y"])
+}
