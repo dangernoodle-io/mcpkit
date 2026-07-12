@@ -30,9 +30,13 @@ docs-check: docs ## fail if generated READMEs drift
 #   - go-sdk (modelcontextprotocol/go-sdk) may be imported only under mcpx/,
 #     the sole seam over the MCP protocol library (see mcpx/README.md).
 #   - cobra (spf13/cobra) may be imported only under cli/,
-#     host/claudecode/hooks/, host/claudecode/statusline/ (if present), and
-#     host/claudecode/provider*.go — cobra stays out of the cobra-free core
-#     and out of host/claudecode/adapter.go (a transport-only stub).
+#     host/claudecode/hooks/, host/claudecode/statusline/ (if present),
+#     host/claudecode/provider*.go, and examples/ — cobra stays out of the
+#     cobra-free core and out of host/claudecode/adapter.go (a
+#     transport-only stub). examples/ is sample consumer code that
+#     demonstrates the cli command-assembly API (cli.ServerCmd,
+#     cli.MountProviders) and models downstream consumers, which import
+#     cobra by design — it is not core.
 SEAM_GREP := grep -rl --exclude-dir=.git --exclude-dir=.worktrees --exclude-dir=vendor --exclude-dir=node_modules --include='*.go'
 
 seam-check:
@@ -44,8 +48,9 @@ seam-check:
 		| grep -v '^\./cli/' \
 		| grep -v '^\./host/claudecode/hooks/' \
 		| grep -v '^\./host/claudecode/statusline/' \
-		| grep -v '^\./host/claudecode/provider'); \
+		| grep -v '^\./host/claudecode/provider' \
+		| grep -v '^\./examples/'); \
 	if [ -n "$$bad" ]; then \
-		echo "cobra imported outside the allowed seam (cli/, host/claudecode/hooks/, host/claudecode/statusline/, host/claudecode/provider*.go):"; \
+		echo "cobra imported outside the allowed seam (cli/, host/claudecode/hooks/, host/claudecode/statusline/, host/claudecode/provider*.go, examples/):"; \
 		echo "$$bad"; exit 1; \
 	fi
