@@ -23,6 +23,14 @@ App.HTTPHandler mounted on an httpx mux, instead of stdio. Nothing about
 UseAsDefault changes: a bare invocation still runs whichever mode the
 copied flags select.
 
+ServerCmd also always registers a `--read-only` bool flag (default
+false), regardless of transport: passing --read-only calls
+App.Gate(mcpkit.ReadOnlyMode()) before the transport starts, hard-blocking
+every non-ReadOnly tool from ever being registered — mcpkit's one
+built-in risk-gating axis. --read-only, --http, and --stateless are all
+reserved flag names: a Server.Flags registration of any of them collides
+and pflag panics at command construction.
+
 ## Reference
 
 - API: <https://pkg.go.dev/github.com/dangernoodle-io/mcpkit/cli>
