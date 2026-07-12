@@ -9,11 +9,21 @@ import (
 // ProgressHandler receives progress notifications for a tracked token.
 type ProgressHandler func(ctx context.Context, token any, message string, progress, total float64)
 
+// ToolListChangedHandler is invoked when the server notifies the client
+// that its tool list changed (see Server.RemoveTools / mcp.AddTool). The
+// notification carries no payload beyond the fact that it occurred; callers
+// that need the new list should follow up with ClientSession.ListTools.
+type ToolListChangedHandler func(ctx context.Context)
+
 // ClientOptions configures a Client. The zero value is valid.
 type ClientOptions struct {
 	// OnProgress, if set, is invoked for every progress notification the
 	// client receives.
 	OnProgress ProgressHandler
+
+	// OnToolListChanged, if set, is invoked whenever the client receives a
+	// notifications/tools/list_changed notification from the server.
+	OnToolListChanged ToolListChangedHandler
 }
 
 // Client is a thin wrapper over mcp.Client, kept so callers never import
@@ -32,6 +42,15 @@ func NewClient(impl Implementation, opts *ClientOptions) *Client {
 				p := req.Params
 				handler(ctx, p.ProgressToken, p.Message, p.Progress, p.Total)
 			},
+		}
+	}
+	if opts != nil && opts.OnToolListChanged != nil {
+		handler := opts.OnToolListChanged
+		if co == nil {
+			co = &mcp.ClientOptions{}
+		}
+		co.ToolListChangedHandler = func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
+			handler(ctx)
 		}
 	}
 	return &Client{cli: mcp.NewClient(&impl, co)}
