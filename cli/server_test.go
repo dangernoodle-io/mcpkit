@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -325,4 +328,283 @@ func TestUseAsDefault_CopiesFlagsForBareInvocation(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "server subcommand must stay attached alongside UseAsDefault")
+}
+
+// TestUseAsDefault_HTTPMode proves --http/--stateless reach root's FlagSet
+// through UseAsDefault's flag copy and that HTTP serving is reachable on a
+// BARE root invocation (no "server" token) — the flags a consumer wires via
+// Server.HTTP must work identically whether the app is invoked as `myapp
+// server --http :0` or, via UseAsDefault, bare `myapp --http :0`.
+func TestUseAsDefault_HTTPMode(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	var started, stopped []string
+	sc := ServerCmd(Server{
+		App:        app,
+		HTTP:       &ServerHTTP{},
+		OnStart:    func(context.Context) error { started = append(started, "start"); return nil },
+		OnShutdown: func(context.Context) error { stopped = append(stopped, "stop"); return nil },
+	})
+
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(sc)
+	UseAsDefault(root, sc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	root.SetContext(ctx)
+	root.SetArgs([]string{"--http", addr})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- root.Execute() }()
+
+	status, _ := postInitialize(t, addr, "/mcp")
+	assert.Equal(t, http.StatusOK, status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+
+	assert.Equal(t, []string{"start"}, started)
+	assert.Equal(t, []string{"stop"}, stopped)
+}
+
+// freeAddr picks an ephemeral loopback address by binding to port 0 and
+// releasing it immediately, so httpx.Serve (which only takes an addr
+// string, not a pre-bound listener) can bind it. The release-then-rebind
+// window is negligible in practice for a same-process test.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+
+	return addr
+}
+
+// postInitialize POSTs a bare JSON-RPC initialize request to url/mcpPath
+// and returns the response's status code and Content-Type header, retrying
+// briefly since the server under test may still be coming up.
+func postInitialize(t *testing.T, addr, mcpPath string) (int, string) {
+	t.Helper()
+
+	url := "http://" + addr + mcpPath
+	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}`
+
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		return resp.StatusCode, resp.Header.Get("Content-Type")
+	}
+
+	t.Fatalf("server never became reachable: %v", lastErr)
+	return 0, ""
+}
+
+func TestServerCmd_HTTPFlagsRegisteredWhenHTTPSet(t *testing.T) {
+	app := buildApp(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{}})
+
+	assert.NotNil(t, cmd.Flags().Lookup("http"))
+	assert.NotNil(t, cmd.Flags().Lookup("stateless"))
+}
+
+func TestServerCmd_HTTPFlagsAbsentWhenHTTPNil(t *testing.T) {
+	app := buildApp(t)
+
+	cmd := ServerCmd(Server{App: app})
+
+	assert.Nil(t, cmd.Flags().Lookup("http"))
+	assert.Nil(t, cmd.Flags().Lookup("stateless"))
+}
+
+func TestServerCmd_StatelessFlagDefaultsFromServerHTTP(t *testing.T) {
+	app := buildApp(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{Stateless: true}})
+
+	assert.Equal(t, "true", cmd.Flags().Lookup("stateless").DefValue)
+}
+
+func TestServerCmd_RunE_HTTPAbsent_UsesStdio(t *testing.T) {
+	app := buildApp(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	err := cmd.RunE(cmd, nil)
+
+	assert.NoError(t, err)
+}
+
+// TestServerCmd_RunE_HTTPMode drives the real RunE (flag parsing included)
+// with --http set to an ephemeral address, then round-trips a JSON-RPC
+// initialize request against the running handler and asserts OnStart/
+// OnShutdown both fire around the HTTP transport exactly as they do around
+// stdio.
+func TestServerCmd_RunE_HTTPMode(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	var started, stopped []string
+	cmd := ServerCmd(Server{
+		App:        app,
+		HTTP:       &ServerHTTP{},
+		OnStart:    func(context.Context) error { started = append(started, "start"); return nil },
+		OnShutdown: func(context.Context) error { stopped = append(stopped, "stop"); return nil },
+	})
+
+	require.NoError(t, cmd.Flags().Set("http", addr))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	status, _ := postInitialize(t, addr, "/mcp")
+	assert.Equal(t, http.StatusOK, status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+
+	assert.Equal(t, []string{"start"}, started)
+	assert.Equal(t, []string{"stop"}, stopped)
+}
+
+// TestServerCmd_RunE_HTTPMode_CustomMCPPath proves ServerHTTP.MCPPath
+// overrides the "/mcp" default.
+func TestServerCmd_RunE_HTTPMode_CustomMCPPath(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{MCPPath: "/custom"}})
+	require.NoError(t, cmd.Flags().Set("http", addr))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	status, _ := postInitialize(t, addr, "/custom")
+	assert.Equal(t, http.StatusOK, status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_HTTPMode_Routes proves ServerHTTP.Routes mounts
+// consumer routes on the same mux the MCP endpoint is served from.
+func TestServerCmd_RunE_HTTPMode_Routes(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	cmd := ServerCmd(Server{
+		App: app,
+		HTTP: &ServerHTTP{
+			Routes: func(mux *http.ServeMux) {
+				mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})
+			},
+		},
+	})
+	require.NoError(t, cmd.Flags().Set("http", addr))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	// Poll /healthz until the server is up (also proves the consumer
+	// route was actually mounted, since a 404 would mean it was not).
+	deadline := time.Now().Add(2 * time.Second)
+	var status int
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			status = resp.StatusCode
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, http.StatusOK, status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_HTTPMode_Stateless proves --stateless flips the
+// handler to stateless + JSON-response mode: the observable difference is
+// the initialize response's Content-Type, application/json instead of the
+// default text/event-stream (mirrors mcpx's
+// TestHTTPHandlerContentTypeMapping, which proves WithJSONResponse reaches
+// the wire).
+func TestServerCmd_RunE_HTTPMode_Stateless(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{}})
+	require.NoError(t, cmd.Flags().Set("http", addr))
+	require.NoError(t, cmd.Flags().Set("stateless", "true"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	_, contentType := postInitialize(t, addr, "/mcp")
+	assert.Contains(t, contentType, "application/json")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_HTTPMode_DefaultIsStateful proves the default (no
+// --stateless) initialize response stays SSE, i.e. stateless mode is
+// opt-in, not accidentally always-on.
+func TestServerCmd_RunE_HTTPMode_DefaultIsStateful(t *testing.T) {
+	app := buildApp(t)
+	addr := freeAddr(t)
+
+	cmd := ServerCmd(Server{App: app, HTTP: &ServerHTTP{}})
+	require.NoError(t, cmd.Flags().Set("http", addr))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	_, contentType := postInitialize(t, addr, "/mcp")
+	assert.Contains(t, contentType, "text/event-stream")
+
+	cancel()
+	require.NoError(t, <-errCh)
 }

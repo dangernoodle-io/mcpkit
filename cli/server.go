@@ -14,18 +14,25 @@
 // cobra auto-provides a `completion` command on any root with subcommands,
 // so this package does not add one.
 //
-// Serving over HTTP instead of stdio (via App.HTTPHandler) is a future seam
-// — e.g. a `--http` flag on the built command — and is not implemented yet.
+// stdio is the default transport. Setting Server.HTTP registers a `--http
+// <addr>` flag (and a `--stateless` flag) on the built command; passing
+// --http switches that single invocation to serving MCP over HTTP via
+// App.HTTPHandler mounted on an httpx mux, instead of stdio. Nothing about
+// UseAsDefault changes: a bare invocation still runs whichever mode the
+// copied flags select.
 package cli
 
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/dangernoodle-io/mcpkit"
+	"github.com/dangernoodle-io/mcpkit/httpx"
+	"github.com/dangernoodle-io/mcpkit/mcpx"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -58,6 +65,35 @@ type Server struct {
 	// AddCommand nests freely, so grandchildren (and deeper) work the same
 	// as leaves; nothing here flattens them.
 	Subcommands []*cobra.Command
+
+	// HTTP opts the built command into HTTP serving via a --http flag.
+	// Nil (the default) means stdio only — no --http/--stateless flags
+	// are registered at all. When HTTP is non-nil, ServerCmd reserves the
+	// flag names "http" and "stateless": a Server.Flags registration of
+	// either name collides and pflag panics at command construction.
+	HTTP *ServerHTTP
+}
+
+// ServerHTTP configures optional HTTP serving for the server command. When
+// Server.HTTP is non-nil, ServerCmd registers a `--http <addr>` string flag
+// (empty default) and a `--stateless` bool flag; stdio remains the default
+// transport whenever --http is not given a value.
+type ServerHTTP struct {
+	// MCPPath is the path the MCP endpoint is mounted at, e.g. "/mcp".
+	// Defaults to "/mcp" when empty.
+	MCPPath string
+
+	// Routes optionally mounts additional consumer routes on the same mux
+	// the MCP endpoint is served from — for a consumer that wants to
+	// co-host other HTTP routes alongside MCP on one listener. Nil-safe.
+	Routes func(*http.ServeMux)
+
+	// Stateless sets the --stateless flag's default value. false (the
+	// zero value) means the server is stateful by default; --stateless
+	// flips a single invocation to stateless (and JSON responses instead
+	// of SSE). --stateless applies only in HTTP mode; it has no effect
+	// on the stdio transport.
+	Stateless bool
 }
 
 // ServerCmd builds the server command: runs App.Run(ctx) with signal-driven
@@ -73,6 +109,9 @@ func ServerCmd(s Server) *cobra.Command {
 		short = "Run the MCP server over the configured transport"
 	}
 
+	var httpAddr string
+	var stateless bool
+
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
@@ -80,8 +119,20 @@ func ServerCmd(s Server) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			return runLifecycle(ctx, s.App.Run, s.OnStart, s.OnShutdown)
+			run := s.App.Run
+			if s.HTTP != nil && httpAddr != "" {
+				run = httpRun(s, httpAddr, stateless)
+			}
+
+			return runLifecycle(ctx, run, s.OnStart, s.OnShutdown)
 		},
+	}
+
+	if s.HTTP != nil {
+		cmd.Flags().StringVar(&httpAddr, "http", "",
+			"serve MCP over HTTP at this address instead of stdio (e.g. :8080)")
+		cmd.Flags().BoolVar(&stateless, "stateless", s.HTTP.Stateless,
+			"serve HTTP sessions statelessly, with JSON responses instead of SSE (only applies with --http; ignored in stdio mode)")
 	}
 
 	if s.Flags != nil {
@@ -93,6 +144,33 @@ func ServerCmd(s Server) *cobra.Command {
 	}
 
 	return cmd
+}
+
+// httpRun builds the run func for HTTP mode: assembles the MCP handler
+// (applying stateless/JSON-response options when stateless is set), mounts
+// it on an httpx mux at s.HTTP.MCPPath (default "/mcp"), applies
+// s.HTTP.Routes if non-nil, and serves via httpx.Serve on addr. Returned as
+// a run func so runLifecycle wraps it with OnStart/OnShutdown identically
+// to the stdio path.
+func httpRun(s Server, addr string, stateless bool) func(context.Context) error {
+	return func(ctx context.Context) error {
+		var opts []mcpx.HTTPOption
+		if stateless {
+			opts = append(opts, mcpx.WithStateless(true), mcpx.WithJSONResponse(true))
+		}
+
+		mcpPath := s.HTTP.MCPPath
+		if mcpPath == "" {
+			mcpPath = "/mcp"
+		}
+
+		mux := httpx.NewMux(mcpPath, s.App.HTTPHandler(opts...))
+		if s.HTTP.Routes != nil {
+			s.HTTP.Routes(mux)
+		}
+
+		return httpx.Serve(ctx, addr, mux)
+	}
 }
 
 // runLifecycle drives the start->run->shutdown sequence, App-free so tests
@@ -136,7 +214,8 @@ func runLifecycle(ctx context.Context, run, onStart, onShutdown func(context.Con
 // FlagSet. The flag copy matters because cobra parses argv against the
 // FlagSet of whichever command is actually executing — on bare invocation
 // that's root, not cmd — so without it any flag registered via Server.Flags
-// (e.g. a future --http) would be rejected as unknown on bare invocation.
+// or Server.HTTP (e.g. --http) would be rejected as unknown on bare
+// invocation.
 //
 // Call UseAsDefault AFTER ServerCmd, once cmd.Flags() already carries the
 // flags Server.Flags registered. The normal pattern keeps the server

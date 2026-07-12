@@ -16,8 +16,12 @@ Claude Code plugin launched without an explicit subcommand.
 cobra auto-provides a `completion` command on any root with subcommands,
 so this package does not add one.
 
-Serving over HTTP instead of stdio (via App.HTTPHandler) is a future seam
-— e.g. a `--http` flag on the built command — and is not implemented yet.
+stdio is the default transport. Setting Server.HTTP registers a `--http
+<addr>` flag (and a `--stateless` flag) on the built command; passing
+--http switches that single invocation to serving MCP over HTTP via
+App.HTTPHandler mounted on an httpx mux, instead of stdio. Nothing about
+UseAsDefault changes: a bare invocation still runs whichever mode the
+copied flags select.
 
 ## Reference
 
