@@ -38,6 +38,36 @@ func buildApp(t *testing.T) *mcpkit.App {
 	return app
 }
 
+func readOnlyGateHandler(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
+	return nil, struct{}{}, nil
+}
+
+// readOnlyGateCap registers one ReadOnly and one Destructive tool, for
+// TestServerCmd_RunE_ReadOnlyFlagGatesTools to assert against.
+type readOnlyGateCap struct{}
+
+func (readOnlyGateCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "ro", Description: "d"}, mcpkit.ReadOnly, readOnlyGateHandler)
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "destructive", Description: "d"}, mcpkit.Destructive, readOnlyGateHandler)
+	return nil
+}
+
+// buildGatedApp builds an *mcpkit.App carrying readOnlyGateCap's two tools
+// over a fakeAdapter, returning the app plus the client-side end of the
+// in-memory transport pair the app's host.Transport() (server-side) is
+// bound to, so a test can drive cmd.RunE's real s.App.Run path (not
+// App.Connect) and still list tools from the other end.
+func buildGatedApp(t *testing.T) (*mcpkit.App, mcpx.Transport) {
+	t.Helper()
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	app, err := mcpkit.New(mcpkit.Info{Name: "acme-gate", Version: "1.0.0"}, fakeAdapter{t: serverT}, readOnlyGateCap{})
+	require.NoError(t, err)
+
+	return app, clientT
+}
+
 // TestAppRun_ReturnsContextCanceledOnCancel is the probe the spec calls for:
 // confirms what mcpkit.App.Run (via mcpx -> go-sdk) actually returns when
 // ctx is cancelled, so runLifecycle's errors.Is(err, context.Canceled)
@@ -584,6 +614,165 @@ func TestServerCmd_RunE_HTTPMode_Stateless(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestServerCmd_ReadOnlyFlagRegisteredUnconditionally(t *testing.T) {
+	app := buildApp(t)
+
+	cmd := ServerCmd(Server{App: app})
+
+	f := cmd.Flags().Lookup("read-only")
+	require.NotNil(t, f, "--read-only must be registered even without Server.HTTP")
+	assert.Equal(t, "false", f.DefValue)
+}
+
+// TestServerCmd_RunE_ReadOnlyFlagGatesTools proves --read-only reaches
+// App.Gate(mcpkit.ReadOnlyMode()) before the transport starts: driving the
+// real RunE with --read-only set, only the ReadOnly tool is advertised in
+// tools/list; the Destructive tool is never registered.
+func TestServerCmd_RunE_ReadOnlyFlagGatesTools(t *testing.T) {
+	app, clientT := buildGatedApp(t)
+
+	cmd := ServerCmd(Server{App: app})
+	require.NoError(t, cmd.Flags().Set("read-only", "true"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro"}, got, "read-only gate must exclude the Destructive tool")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_ReadOnlyFlagAbsent_AdvertisesEverything is the
+// regression guard: without --read-only, both tools are advertised, proving
+// the gate is opt-in, not accidentally always-on.
+func TestServerCmd_RunE_ReadOnlyFlagAbsent_AdvertisesEverything(t *testing.T) {
+	app, clientT := buildGatedApp(t)
+
+	cmd := ServerCmd(Server{App: app})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro", "destructive"}, got)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_ReadOnlyFlagGateErrorPropagates proves a failing
+// App.Gate call (pre-start-only; errors once the app has already finalized
+// registration) aborts RunE before the transport ever starts, instead of
+// being silently swallowed.
+func TestServerCmd_RunE_ReadOnlyFlagGateErrorPropagates(t *testing.T) {
+	app, clientT := buildGatedApp(t)
+
+	// Finalize registration up front by running the app to completion over
+	// the in-memory pair, so App.Gate's pre-start-only guard rejects the
+	// --read-only call RunE makes below.
+	warmupCtx, warmupCancel := context.WithCancel(context.Background())
+	warmupErrCh := make(chan error, 1)
+	go func() { warmupErrCh <- app.Run(warmupCtx) }()
+	_ = listToolNames(t, clientT)
+	warmupCancel()
+	warmupErr := <-warmupErrCh
+	if warmupErr != nil {
+		require.ErrorIs(t, warmupErr, context.Canceled)
+	}
+
+	cmd := ServerCmd(Server{App: app})
+	require.NoError(t, cmd.Flags().Set("read-only", "true"))
+	cmd.SetContext(context.Background())
+
+	err := cmd.RunE(cmd, nil)
+
+	require.Error(t, err, "a failing Gate call must abort RunE")
+	assert.Contains(t, err.Error(), "Gate must be called before Run/Connect/HTTPHandler")
+}
+
+// TestServerCmd_ReadOnlyFlagCollisionPanics mirrors the documented
+// --http/--stateless collision contract: a Server.Flags registration of the
+// reserved "read-only" name collides on the same FlagSet ServerCmd already
+// registered it on, and pflag panics at command construction.
+func TestServerCmd_ReadOnlyFlagCollisionPanics(t *testing.T) {
+	app := buildApp(t)
+
+	assert.Panics(t, func() {
+		ServerCmd(Server{
+			App: app,
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Bool("read-only", false, "colliding usage")
+			},
+		})
+	})
+}
+
+// TestUseAsDefault_ReadOnlyFlagGatesTools proves --read-only also gates on a
+// BARE root invocation via UseAsDefault's flag copy, not just on the
+// explicit `server` subcommand.
+func TestUseAsDefault_ReadOnlyFlagGatesTools(t *testing.T) {
+	app, clientT := buildGatedApp(t)
+
+	sc := ServerCmd(Server{App: app})
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(sc)
+	UseAsDefault(root, sc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	root.SetContext(ctx)
+	root.SetArgs([]string{"--read-only"})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- root.Execute() }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro"}, got, "bare --read-only must gate the same as the server subcommand")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// listToolNames connects an in-memory MCP client over clientT and returns
+// the names tools/list advertises, retrying briefly since the server side
+// (driven by cmd.RunE/root.Execute in a background goroutine) may still be
+// coming up.
+func listToolNames(t *testing.T, clientT mcpx.Transport) []string {
+	t.Helper()
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "test-client", Version: "0.0.0"}, nil)
+
+	var sess *mcpx.ClientSession
+	require.Eventually(t, func() bool {
+		s, err := client.Connect(context.Background(), clientT)
+		if err != nil {
+			return false
+		}
+		sess = s
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "client never connected to the in-memory server")
+	t.Cleanup(func() { _ = sess.Close() })
+
+	res, err := sess.ListTools(context.Background())
+	require.NoError(t, err)
+
+	got := make([]string, 0, len(res.Tools))
+	for _, tool := range res.Tools {
+		got = append(got, tool.Name)
+	}
+	return got
 }
 
 // TestServerCmd_RunE_HTTPMode_DefaultIsStateful proves the default (no

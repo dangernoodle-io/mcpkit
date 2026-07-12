@@ -20,6 +20,14 @@
 // App.HTTPHandler mounted on an httpx mux, instead of stdio. Nothing about
 // UseAsDefault changes: a bare invocation still runs whichever mode the
 // copied flags select.
+//
+// ServerCmd also always registers a `--read-only` bool flag (default
+// false), regardless of transport: passing --read-only calls
+// App.Gate(mcpkit.ReadOnlyMode()) before the transport starts, hard-blocking
+// every non-ReadOnly tool from ever being registered — mcpkit's one
+// built-in risk-gating axis. --read-only, --http, and --stateless are all
+// reserved flag names: a Server.Flags registration of any of them collides
+// and pflag panics at command construction.
 package cli
 
 import (
@@ -111,6 +119,7 @@ func ServerCmd(s Server) *cobra.Command {
 
 	var httpAddr string
 	var stateless bool
+	var readOnly bool
 
 	cmd := &cobra.Command{
 		Use:   use,
@@ -118,6 +127,12 @@ func ServerCmd(s Server) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+
+			if readOnly {
+				if err := s.App.Gate(mcpkit.ReadOnlyMode()); err != nil {
+					return err
+				}
+			}
 
 			run := s.App.Run
 			if s.HTTP != nil && httpAddr != "" {
@@ -127,6 +142,15 @@ func ServerCmd(s Server) *cobra.Command {
 			return runLifecycle(ctx, run, s.OnStart, s.OnShutdown)
 		},
 	}
+
+	// --read-only applies to every server command regardless of transport
+	// (it gates tool registration, not transport selection), so — unlike
+	// --http/--stateless — it is registered unconditionally, not gated on
+	// Server.HTTP. Registering it here, before Server.Flags runs below,
+	// reserves the name: a Server.Flags registration of "read-only" would
+	// collide on the same FlagSet and pflag panics at construction.
+	cmd.Flags().BoolVar(&readOnly, "read-only", false,
+		"gate the app to ReadOnly tools only; write/destructive tools are never registered")
 
 	if s.HTTP != nil {
 		cmd.Flags().StringVar(&httpAddr, "http", "",
