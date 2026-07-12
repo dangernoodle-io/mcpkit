@@ -97,3 +97,45 @@ func TestHarnessProgress(t *testing.T) {
 	// A different token must not see this call's events.
 	require.Empty(t, h.ProgressEvents("unrelated-token"))
 }
+
+// TestHarnessToolListChanged_Timeout proves WaitForToolListChanged returns
+// false when no notifications/tools/list_changed notification arrives
+// within the timeout (nothing in this test triggers one).
+func TestHarnessToolListChanged_Timeout(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "no-change-test", Version: "0.0.1"}, generic.New(), pingCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	require.False(t, h.WaitForToolListChanged(20*time.Millisecond))
+}
+
+type lockedToolCap struct{}
+
+func (lockedToolCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{
+		Name:        "locked-tool",
+		Description: "d",
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, pingOut, error) {
+		return nil, pingOut{}, nil
+	}, mcpkit.Group("locked"))
+	return nil
+}
+
+// TestHarnessToolListChanged_Signaled proves WaitForToolListChanged (and its
+// AssertToolListChanged wrapper) observe a real
+// notifications/tools/list_changed notification fired by a runtime Unlock.
+func TestHarnessToolListChanged_Signaled(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "list-changed-test", Version: "0.0.1"}, generic.New(), lockedToolCap{})
+	require.NoError(t, err)
+
+	require.NoError(t, app.Lock("locked"))
+
+	h := testkit.New(t, app)
+	testkit.AssertToolSet(t, h)
+
+	require.NoError(t, app.Unlock("locked"))
+
+	testkit.AssertToolListChanged(t, h, 5*time.Second)
+	testkit.AssertToolSet(t, h, "locked-tool")
+}
