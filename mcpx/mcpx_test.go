@@ -191,6 +191,101 @@ func TestRunUnwindsOnClientClose(t *testing.T) {
 	}
 }
 
+// TestRemoveTools proves RemoveTools drops a previously-added tool from the
+// server's advertised tool list.
+func TestRemoveTools(t *testing.T) {
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "remove-tools-server", Version: "0.0.1"}, "")
+	mcpx.AddTool(srv, &mcpx.Tool{
+		Name: "gone",
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
+		return nil, struct{}{}, nil
+	})
+	mcpx.AddTool(srv, &mcpx.Tool{
+		Name: "stays",
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
+		return nil, struct{}{}, nil
+	})
+
+	srv.RemoveTools("gone")
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	ctx := context.Background()
+	sess, err := srv.Connect(ctx, serverT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "remove-tools-client", Version: "0.0.1"}, nil)
+	clientSess, err := client.Connect(ctx, clientT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = clientSess.Close() })
+
+	tools, err := clientSess.ListTools(ctx)
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 1)
+	require.Equal(t, "stays", tools.Tools[0].Name)
+}
+
+// TestOnToolListChanged proves a client with OnToolListChanged set observes
+// the notification when the server's tool list changes mid-session. go-sdk
+// debounces list-changed notifications by 10ms, so this asserts on the
+// callback firing and the resulting tool list, not on notification count.
+func TestOnToolListChanged(t *testing.T) {
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "list-changed-server", Version: "0.0.1"}, "")
+	mcpx.AddTool(srv, &mcpx.Tool{
+		Name: "initial",
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
+		return nil, struct{}{}, nil
+	})
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	ctx := context.Background()
+	sess, err := srv.Connect(ctx, serverT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	changed := make(chan struct{}, 4)
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "list-changed-client", Version: "0.0.1"}, &mcpx.ClientOptions{
+		OnToolListChanged: func(_ context.Context) {
+			changed <- struct{}{}
+		},
+	})
+	clientSess, err := client.Connect(ctx, clientT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = clientSess.Close() })
+
+	mcpx.AddTool(srv, &mcpx.Tool{
+		Name: "added",
+	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
+		return nil, struct{}{}, nil
+	})
+
+	select {
+	case <-changed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not receive tool list changed notification after AddTool")
+	}
+
+	tools, err := clientSess.ListTools(ctx)
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 2)
+
+	srv.RemoveTools("added")
+
+	select {
+	case <-changed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not receive tool list changed notification after RemoveTools")
+	}
+
+	tools, err = clientSess.ListTools(ctx)
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 1)
+	require.Equal(t, "initial", tools.Tools[0].Name)
+}
+
 // TestSessionWait exercises (*Session).Wait, the non-blocking-connect
 // counterpart to Run: it must block while the client is connected, and
 // return once the client closes.

@@ -69,6 +69,13 @@ func AddTool[In, Out any](s *Server, t *Tool, h Handler[In, Out]) {
 	mcp.AddTool(s.srv, t, h)
 }
 
+// RemoveTools removes the named tools from s. It is not an error to remove
+// a nonexistent tool. Connected clients that set OnToolListChanged are
+// notified automatically (go-sdk internal).
+func (s *Server) RemoveTools(names ...string) {
+	s.srv.RemoveTools(names...)
+}
+
 // Run serves s over t until the client disconnects or ctx is cancelled.
 func (s *Server) Run(ctx context.Context, t Transport) error {
 	return s.srv.Run(ctx, t.transport())
