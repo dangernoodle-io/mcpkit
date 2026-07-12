@@ -1,6 +1,6 @@
 package statusline
 
-import "os"
+import "github.com/dangernoodle-io/mcpkit/identity"
 
 // Resolve resolves the session identity a statusline invocation should
 // filter its rendered data by, generalizing pogopin's BR-76 precedence to
@@ -16,15 +16,16 @@ import "os"
 //  4. "" — no session could be resolved; consumers should render nothing
 //     rather than fall back to an unfiltered view.
 func Resolve(payload Payload, appPrefix string) string {
+	var sources []identity.Source
+
 	if appPrefix != "" {
-		if v := os.Getenv(appPrefix + "_SESSION_ID"); v != "" {
-			return v
-		}
+		sources = append(sources, identity.Env(appPrefix+"_SESSION_ID"))
 	}
 
-	if payload.SessionID != "" {
-		return payload.SessionID
-	}
+	sources = append(sources,
+		identity.Static(payload.SessionID),
+		identity.Env("CLAUDE_CODE_SESSION_ID"),
+	)
 
-	return os.Getenv("CLAUDE_CODE_SESSION_ID")
+	return identity.Resolve(sources...)
 }
