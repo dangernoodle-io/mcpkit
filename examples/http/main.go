@@ -12,6 +12,7 @@ import (
 
 	"github.com/dangernoodle-io/mcpkit"
 	"github.com/dangernoodle-io/mcpkit/host/generic"
+	"github.com/dangernoodle-io/mcpkit/httpx"
 	"github.com/dangernoodle-io/mcpkit/mcpx"
 )
 
@@ -40,13 +41,12 @@ func (helloCap) Attach(r *mcpkit.Registrar) error {
 }
 
 // newMux builds the co-mount example: MCP as just one handler among the
-// consumer's own on a single mux.
+// consumer's own on a single mux, via httpx.NewMux.
 func newMux(app *mcpkit.App) *http.ServeMux {
-	mux := http.NewServeMux()
 	// The mount path is the consumer's choice — "/mcp" here is illustrative,
 	// not required. mcpkit imposes no route, and calling HTTPHandler at all
 	// is opt-in: a server that never serves MCP over HTTP simply never calls it.
-	mux.Handle("/mcp", app.HTTPHandler())
+	mux := httpx.NewMux("/mcp", app.HTTPHandler())
 	// The same mux/server can serve unrelated purposes alongside MCP.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -61,5 +61,11 @@ func main() {
 		log.Fatalf("compose app: %v", err)
 	}
 
-	log.Fatal(http.ListenAndServe(":8080", newMux(app)))
+	// httpx.Serve handles SIGINT/SIGTERM itself, so context.Background()
+	// is all that's needed here: Ctrl-C triggers a graceful shutdown
+	// instead of the bare log.Fatal(ListenAndServe(...)) this example used
+	// to have.
+	if err := httpx.Serve(context.Background(), ":8080", newMux(app)); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }
