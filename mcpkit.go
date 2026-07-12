@@ -66,6 +66,26 @@ func Group(name string) ToolOption {
 	return groupOption(name)
 }
 
+// GateOption configures the startup tool gate applied by App.Gate.
+type GateOption func(*gateState)
+
+// gateState holds the startup-gate predicates registry.finalize evaluates
+// per pending tool. Its zero value blocks nothing, preserving MC-43's
+// register-everything behavior for an App that never calls Gate/BlockGroups.
+type gateState struct {
+	readOnly      bool
+	blockedGroups map[string]bool
+}
+
+// ReadOnlyMode is a GateOption that hard-blocks every pending tool whose
+// risk is not ReadOnly: it is never registered against the underlying
+// server, so it can't appear in tools/list or be called.
+func ReadOnlyMode() GateOption {
+	return func(g *gateState) {
+		g.readOnly = true
+	}
+}
+
 // Registrar is what a Capability's Attach method uses to register itself
 // against the underlying server and inspect the target host. Capabilities
 // register tools through the package-level AddTool, not against mcpx
@@ -142,6 +162,7 @@ type registry struct {
 	pending []pendingTool
 	byGroup map[string][]string
 	started bool
+	gate    gateState
 }
 
 // add appends t to the pending set. Safe for concurrent Attach calls.
@@ -151,9 +172,52 @@ func (reg *registry) add(t pendingTool) {
 	reg.pending = append(reg.pending, t)
 }
 
-// finalize registers every pending tool against srv exactly once. It is
-// idempotent: a second call (e.g. Run then Connect, or Run called twice) is
-// a guarded no-op rather than double-registering or panicking.
+// applyGate applies opts to reg's gate state. Gate/BlockGroups are
+// pre-start-only mechanisms (MC-44 is a startup gate, not the runtime
+// Lock/Unlock MC-45 adds later): once finalize has run, mutating the gate
+// would have no effect on already-registered tools, so applyGate errors
+// instead of silently no-op'ing.
+func (reg *registry) applyGate(opts ...GateOption) error {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	if reg.started {
+		return fmt.Errorf("mcpkit: Gate must be called before Run/Connect/HTTPHandler")
+	}
+
+	for _, opt := range opts {
+		opt(&reg.gate)
+	}
+	return nil
+}
+
+// blockGroups hard-blocks the named groups at startup, same pre-start-only
+// contract as applyGate.
+func (reg *registry) blockGroups(groups ...string) error {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	if reg.started {
+		return fmt.Errorf("mcpkit: BlockGroups must be called before Run/Connect/HTTPHandler")
+	}
+
+	if reg.gate.blockedGroups == nil {
+		reg.gate.blockedGroups = make(map[string]bool)
+	}
+	for _, g := range groups {
+		reg.gate.blockedGroups[g] = true
+	}
+	return nil
+}
+
+// finalize registers every pending tool against srv exactly once, skipping
+// any tool the startup gate (MC-44) blocks on either axis: risk (readOnly)
+// or group. A gated-off tool is never registered against srv and never
+// recorded in byGroup, so it can't appear in tools/list, can't be called,
+// and (per MC-44's hard-block contract) can't later be resurrected by
+// MC-45's runtime Unlock. finalize is idempotent: a second call (e.g. Run
+// then Connect, or Run called twice) is a guarded no-op rather than
+// double-registering or panicking.
 func (reg *registry) finalize(srv *mcpx.Server) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -168,7 +232,10 @@ func (reg *registry) finalize(srv *mcpx.Server) {
 	}
 
 	for _, t := range reg.pending {
-		// MC-44 gate predicate slots in here (a per-tool allow check that may `continue`).
+		blocked := (reg.gate.readOnly && t.risk != ReadOnly) || reg.gate.blockedGroups[t.group]
+		if blocked {
+			continue
+		}
 		t.register(srv)
 		reg.byGroup[t.group] = append(reg.byGroup[t.group], t.name)
 	}
@@ -214,6 +281,24 @@ func New(info Info, h host.Adapter, caps ...Capability) (*App, error) {
 // order.
 func (a *App) finalize() {
 	a.reg.finalize(a.server)
+}
+
+// Gate applies opts to a's startup tool gate (e.g. ReadOnlyMode). A gated-off
+// tool is never registered against the underlying server — it is a hard
+// block, not a hidden-but-reachable tool. Gate is pre-start-only: it must be
+// called before Run, Connect, or HTTPHandler (whichever finalizes
+// registration first); calling it afterward returns an error rather than
+// silently having no effect.
+func (a *App) Gate(opts ...GateOption) error {
+	return a.reg.applyGate(opts...)
+}
+
+// BlockGroups hard-blocks every pending tool tagged (via the Group
+// ToolOption) with one of groups: it is never registered against the
+// underlying server. Same pre-start-only contract as Gate — must be called
+// before Run/Connect/HTTPHandler, or it returns an error.
+func (a *App) BlockGroups(groups ...string) error {
+	return a.reg.blockGroups(groups...)
 }
 
 // Run serves the app over its host's transport until the client disconnects
