@@ -30,7 +30,7 @@ func (helloCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "hello",
 		Description: "greets the caller by name",
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, in helloIn) (*mcpx.CallToolResult, helloOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, in helloIn) (*mcpx.CallToolResult, helloOut, error) {
 		name := in.Name
 		if name == "" {
 			name = "world"

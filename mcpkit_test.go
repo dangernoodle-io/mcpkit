@@ -28,7 +28,7 @@ func (helloCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "hello",
 		Description: "greets the caller by name",
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, in helloIn) (*mcpx.CallToolResult, helloOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, in helloIn) (*mcpx.CallToolResult, helloOut, error) {
 		name := in.Name
 		if name == "" {
 			name = "world"
@@ -76,7 +76,7 @@ func (panicCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "panics",
 		Description: "always panics",
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ panicIn) (*mcpx.CallToolResult, panicOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, _ panicIn) (*mcpx.CallToolResult, panicOut, error) {
 		panic("kaboom")
 	})
 	return nil
@@ -146,7 +146,7 @@ func (annotatedCap) Attach(r *mcpkit.Registrar) error {
 			ReadOnlyHint:    true,
 			DestructiveHint: mcpx.BoolPtr(true),
 		},
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ annotatedIn) (*mcpx.CallToolResult, annotatedOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, _ annotatedIn) (*mcpx.CallToolResult, annotatedOut, error) {
 		return nil, annotatedOut{OK: true}, nil
 	})
 	return nil
@@ -193,4 +193,90 @@ func TestAppHTTPHandler(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "text/event-stream")
+}
+
+type riskIn struct{}
+
+type riskOut struct{}
+
+// riskCap registers one tool per Risk value, each left with a nil
+// Annotations so AddTool must derive it from risk via mcpx.RiskAnnotations.
+type riskCap struct{}
+
+func (riskCap) Attach(r *mcpkit.Registrar) error {
+	handler := func(_ context.Context, _ *mcpx.CallToolRequest, _ riskIn) (*mcpx.CallToolResult, riskOut, error) {
+		return nil, riskOut{}, nil
+	}
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "risk-readonly", Description: "d"}, mcpkit.ReadOnly, handler)
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "risk-write", Description: "d"}, mcpkit.Write, handler)
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "risk-destructive", Description: "d"}, mcpkit.Destructive, handler)
+	return nil
+}
+
+// TestAddToolRiskAutoAnnotation proves AddTool derives ToolAnnotations from
+// each Risk value via mcpx.RiskAnnotations when the caller left
+// t.Annotations nil: ReadOnlyHint tracks Risk == ReadOnly, and
+// DestructiveHint tracks Risk == Destructive (Write gets neither hint set).
+func TestAddToolRiskAutoAnnotation(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "risk-e2e", Version: "0.0.1"}, generic.New(), riskCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	res, err := h.ListTools(context.Background())
+	require.NoError(t, err)
+
+	byName := make(map[string]*mcpx.ToolAnnotations, len(res.Tools))
+	for _, tool := range res.Tools {
+		byName[tool.Name] = tool.Annotations
+	}
+
+	ro := byName["risk-readonly"]
+	require.NotNil(t, ro)
+	require.True(t, ro.ReadOnlyHint)
+	require.NotNil(t, ro.DestructiveHint)
+	require.False(t, *ro.DestructiveHint)
+
+	wr := byName["risk-write"]
+	require.NotNil(t, wr)
+	require.False(t, wr.ReadOnlyHint)
+	require.NotNil(t, wr.DestructiveHint)
+	require.False(t, *wr.DestructiveHint)
+
+	de := byName["risk-destructive"]
+	require.NotNil(t, de)
+	require.False(t, de.ReadOnlyHint)
+	require.NotNil(t, de.DestructiveHint)
+	require.True(t, *de.DestructiveHint)
+}
+
+// TestDeferredRegistrationAdvertisesAfterConnect proves the deferred
+// registration MC-43 introduces is behavior-preserving from a client's
+// perspective: a tool registered via AddTool before the first Connect is
+// fully advertised (tools/list) and callable once a session exists.
+func TestDeferredRegistrationAdvertisesAfterConnect(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "deferred-e2e", Version: "0.0.1"}, generic.New(), helloCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	testkit.AssertToolSet(t, h, "hello")
+}
+
+// TestAppConnectIdempotentAcrossSessions proves a second Connect against the
+// same App (finalize's idempotency guard) neither panics nor loses tools: a
+// second in-memory session still sees the same fully-registered tool set,
+// proving finalize's first run is what registered it and the second run
+// was a no-op rather than a duplicate-registration panic.
+func TestAppConnectIdempotentAcrossSessions(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "reconnect-e2e", Version: "0.0.1"}, generic.New(), helloCap{})
+	require.NoError(t, err)
+
+	h1 := testkit.New(t, app)
+	testkit.AssertToolSet(t, h1, "hello")
+
+	require.NotPanics(t, func() {
+		h2 := testkit.New(t, app)
+		testkit.AssertToolSet(t, h2, "hello")
+	})
 }

@@ -22,7 +22,7 @@ func (pingCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "ping",
 		Description: "replies pong",
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, pingOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, pingOut, error) {
 		return nil, pingOut{Reply: "pong"}, nil
 	})
 	return nil
@@ -54,7 +54,7 @@ func (workCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "work",
 		Description: "emits a progress notification keyed to the caller's token, then completes",
-	}, func(ctx context.Context, req *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, workOut, error) {
+	}, mcpkit.ReadOnly, func(ctx context.Context, req *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, workOut, error) {
 		if err := mcpx.NotifyProgress(ctx, req, "halfway", 50, 100); err != nil {
 			return nil, workOut{}, err
 		}

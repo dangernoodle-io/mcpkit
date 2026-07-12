@@ -33,7 +33,7 @@ func (pingCap) Attach(r *mcpkit.Registrar) error {
 	mcpkit.AddTool(r, &mcpx.Tool{
 		Name:        "ping",
 		Description: "replies with pong",
-	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ pingIn) (*mcpx.CallToolResult, pingOut, error) {
+	}, mcpkit.ReadOnly, func(_ context.Context, _ *mcpx.CallToolRequest, _ pingIn) (*mcpx.CallToolResult, pingOut, error) {
 		return nil, pingOut{Message: "pong"}, nil
 	})
 	return nil
