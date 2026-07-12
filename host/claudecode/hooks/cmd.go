@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"io"
+	"os"
 
 	"github.com/dangernoodle-io/mcpkit/jsonutil"
 	"github.com/spf13/cobra"
@@ -79,6 +80,10 @@ func leaf[P any](use, ccEvent string, h Handler[P]) *cobra.Command {
 				var payload P
 				if err := jsonutil.Unmarshal(data, &payload); err != nil {
 					return err
+				}
+
+				if p, ok := any(&payload).(interface{ commonPtr() *Common }); ok {
+					p.commonPtr().ProjectDir = os.Getenv("CLAUDE_PROJECT_DIR")
 				}
 
 				resp := h(cmd.Context(), bytes.NewReader(data), payload)

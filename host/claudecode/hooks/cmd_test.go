@@ -188,3 +188,84 @@ func TestCommand_PanickingHandlerFailsOpen(t *testing.T) {
 		assert.Empty(t, out, "a recovered panic must not leave a partial Response on stdout")
 	})
 }
+
+// TestCommand_ProjectDirPopulatedFromEnv proves leaf injects CLAUDE_PROJECT_DIR
+// into the decoded payload's Common.ProjectDir, across multiple event types,
+// exercising the generic commonPtr injection in cmd.go.
+func TestCommand_ProjectDirPopulatedFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECT_DIR", "/repo/root")
+
+	var gotStop StopPayload
+	var gotPreToolUse PreToolUsePayload
+	reg := NewRegistry().
+		Stop(func(_ context.Context, _ io.Reader, p StopPayload) Response {
+			gotStop = p
+			return Response{}
+		}).
+		PreToolUse(func(_ context.Context, _ io.Reader, p PreToolUsePayload) Response {
+			gotPreToolUse = p
+			return Response{}
+		})
+
+	cmd := Command(reg)
+	runLeaf(t, cmd, "stop", `{"session_id":"s1"}`)
+
+	cmd = Command(reg)
+	runLeaf(t, cmd, "pre-tool-use", `{"tool_name":"Edit"}`)
+
+	assert.Equal(t, "/repo/root", gotStop.ProjectDir)
+	assert.Equal(t, "/repo/root", gotPreToolUse.ProjectDir)
+}
+
+// TestCommand_ProjectDirIgnoresStdinField proves ProjectDir's json:"-" tag
+// keeps stdin JSON from ever setting it: only the CLAUDE_PROJECT_DIR
+// environment variable can populate it.
+func TestCommand_ProjectDirIgnoresStdinField(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECT_DIR", "/from/env")
+
+	var got StopPayload
+	reg := NewRegistry().Stop(func(_ context.Context, _ io.Reader, p StopPayload) Response {
+		got = p
+		return Response{}
+	})
+
+	cmd := Command(reg)
+	runLeaf(t, cmd, "stop", `{"session_id":"s1","project_dir":"/from/stdin"}`)
+
+	assert.Equal(t, "/from/env", got.ProjectDir)
+}
+
+// TestCommand_ProjectDirEmptyWhenEnvUnset proves a missing CLAUDE_PROJECT_DIR
+// leaves ProjectDir empty rather than panicking or leaking a prior value.
+func TestCommand_ProjectDirEmptyWhenEnvUnset(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECT_DIR", "")
+
+	var got StopPayload
+	reg := NewRegistry().Stop(func(_ context.Context, _ io.Reader, p StopPayload) Response {
+		got = p
+		return Response{}
+	})
+
+	cmd := Command(reg)
+	runLeaf(t, cmd, "stop", `{"session_id":"s1"}`)
+
+	assert.Empty(t, got.ProjectDir)
+}
+
+// TestCommand_NewCommonFieldsDecode proves prompt_id, permission_mode, and
+// effort — current Claude Code documented stdin fields added to Common —
+// decode from stdin JSON.
+func TestCommand_NewCommonFieldsDecode(t *testing.T) {
+	var got StopPayload
+	reg := NewRegistry().Stop(func(_ context.Context, _ io.Reader, p StopPayload) Response {
+		got = p
+		return Response{}
+	})
+
+	cmd := Command(reg)
+	runLeaf(t, cmd, "stop", `{"session_id":"s1","prompt_id":"p1","permission_mode":"acceptEdits","effort":"high"}`)
+
+	assert.Equal(t, "p1", got.PromptID)
+	assert.Equal(t, "acceptEdits", got.PermissionMode)
+	assert.Equal(t, "high", got.Effort)
+}
