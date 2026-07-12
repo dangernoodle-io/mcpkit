@@ -15,21 +15,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewProvider_CommandsReturnsClaudeTree proves Commands() returns the
-// single `claude` namespace command holding `hooks`.
-func TestNewProvider_CommandsReturnsClaudeTree(t *testing.T) {
+// TestNewProvider_MountsReturnsClaudeTree proves Mounts() returns a single
+// root-mounted Mount holding the `claude` namespace command, which in turn
+// holds `hooks`.
+func TestNewProvider_MountsReturnsClaudeTree(t *testing.T) {
 	reg := hooks.NewRegistry().Stop(func(_ context.Context, _ io.Reader, _ hooks.StopPayload) hooks.Response {
 		return hooks.Response{}
 	})
 
 	p := claudecode.NewProvider(reg)
-	cmds := p.Commands()
+	mounts := p.Mounts()
 
-	require.Len(t, cmds, 1)
-	assert.Equal(t, "claude", cmds[0].Use)
+	require.Len(t, mounts, 1)
+	assert.Empty(t, mounts[0].Under, "the claude tree mounts at root")
+	assert.Equal(t, "claude", mounts[0].Cmd.Use)
 
 	names := map[string]bool{}
-	for _, c := range cmds[0].Commands() {
+	for _, c := range mounts[0].Cmd.Commands() {
 		names[c.Use] = true
 	}
 	assert.True(t, names["hooks"])
@@ -43,12 +45,12 @@ func TestNewProvider_ExtraSubtreesAppendUnderClaude(t *testing.T) {
 	extra := &cobra.Command{Use: "statusline"}
 
 	p := claudecode.NewProvider(hooks.NewRegistry(), extra)
-	cmds := p.Commands()
+	mounts := p.Mounts()
 
-	require.Len(t, cmds, 1)
+	require.Len(t, mounts, 1)
 
 	names := map[string]bool{}
-	for _, c := range cmds[0].Commands() {
+	for _, c := range mounts[0].Cmd.Commands() {
 		names[c.Use] = true
 	}
 	assert.True(t, names["hooks"])
@@ -58,7 +60,8 @@ func TestNewProvider_ExtraSubtreesAppendUnderClaude(t *testing.T) {
 // TestMountProviders_EndToEndDispatch proves the full mount path: root ->
 // cli.MountProviders(root, claudecode.NewProvider(reg)) -> `root claude
 // hooks stop` dispatches to the registered handler and its Response
-// reaches stdout, fed via real stdin bytes.
+// reaches stdout, fed via real stdin bytes. It also asserts every mounted
+// path resolves via root.Find.
 func TestMountProviders_EndToEndDispatch(t *testing.T) {
 	var gotSessionID string
 	reg := hooks.NewRegistry().Stop(func(_ context.Context, _ io.Reader, p hooks.StopPayload) hooks.Response {
@@ -66,17 +69,29 @@ func TestMountProviders_EndToEndDispatch(t *testing.T) {
 		return hooks.Response{AdditionalContext: "seen"}
 	})
 
+	extra := &cobra.Command{Use: "statusline", RunE: func(*cobra.Command, []string) error { return nil }}
+
 	root := &cobra.Command{Use: "root"}
-	cli.MountProviders(root, claudecode.NewProvider(reg))
+	err := cli.MountProviders(root, claudecode.NewProvider(reg, extra))
+	require.NoError(t, err)
+
+	_, _, findErr := root.Find([]string{"claude"})
+	require.NoError(t, findErr)
+
+	_, _, findErr = root.Find([]string{"claude", "hooks"})
+	require.NoError(t, findErr)
+
+	_, _, findErr = root.Find([]string{"claude", "statusline"})
+	require.NoError(t, findErr)
 
 	var out bytes.Buffer
 	root.SetArgs([]string{"claude", "hooks", "stop"})
 	root.SetIn(strings.NewReader(`{"session_id":"abc123"}`))
 	root.SetOut(&out)
 
-	err := root.Execute()
+	execErr := root.Execute()
 
-	require.NoError(t, err)
+	require.NoError(t, execErr)
 	assert.Equal(t, "abc123", gotSessionID)
 	assert.Contains(t, out.String(), `"hookEventName":"Stop"`)
 	assert.Contains(t, out.String(), `"additionalContext":"seen"`)

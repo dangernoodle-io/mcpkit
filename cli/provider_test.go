@@ -10,23 +10,115 @@ import (
 
 // fakeProvider is a minimal CommandProvider for tests.
 type fakeProvider struct {
-	cmds []*cobra.Command
+	mounts []Mount
 }
 
-func (f fakeProvider) Commands() []*cobra.Command { return f.cmds }
+func (f fakeProvider) Mounts() []Mount { return f.mounts }
+
+func newCmd(use string) *cobra.Command {
+	return &cobra.Command{Use: use, RunE: func(*cobra.Command, []string) error { return nil }}
+}
+
+func TestMountAll_RootMount(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+
+	err := MountAll(root, Mount{Cmd: newCmd("one")})
+
+	require.NoError(t, err)
+
+	names := map[string]bool{}
+	for _, c := range root.Commands() {
+		names[c.Use] = true
+	}
+	assert.True(t, names["one"])
+}
+
+func TestMountAll_OneLevelUnder(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	server := newCmd("server")
+	root.AddCommand(server)
+
+	err := MountAll(root, Mount{Under: []string{"server"}, Cmd: newCmd("sub")})
+
+	require.NoError(t, err)
+
+	found := false
+	for _, c := range server.Commands() {
+		if c.Use == "sub" {
+			found = true
+		}
+	}
+	assert.True(t, found, "sub must mount under server")
+}
+
+func TestMountAll_NestedUnder(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	hooks := newCmd("hooks")
+	claude := HostNamespaceCmd("claude", hooks)
+	root.AddCommand(claude)
+
+	err := MountAll(root, Mount{Under: []string{"claude", "hooks"}, Cmd: newCmd("stop")})
+
+	require.NoError(t, err)
+
+	found := false
+	for _, c := range hooks.Commands() {
+		if c.Use == "stop" {
+			found = true
+		}
+	}
+	assert.True(t, found, "stop must mount under claude hooks")
+}
+
+func TestMountAll_UnknownSegmentErrors(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+
+	err := MountAll(root, Mount{Under: []string{"nope"}, Cmd: newCmd("one")})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"nope"`)
+}
+
+func TestMountAll_UnknownSecondSegmentErrors(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(newCmd("claude"))
+
+	err := MountAll(root, Mount{Under: []string{"claude", "nope"}, Cmd: newCmd("one")})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"nope"`)
+	assert.Contains(t, err.Error(), `"claude"`)
+}
+
+func TestMountAll_NilCmdIsSkippedSafely(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+
+	assert.NotPanics(t, func() {
+		err := MountAll(root, Mount{Cmd: nil})
+		assert.NoError(t, err)
+	})
+	assert.Empty(t, root.Commands())
+}
+
+func TestMountAll_ProcessesInArgumentOrder(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+
+	err := MountAll(root, Mount{Cmd: newCmd("one")}, Mount{Cmd: newCmd("two")})
+
+	require.NoError(t, err)
+	require.Len(t, root.Commands(), 2)
+	assert.Equal(t, "one", root.Commands()[0].Use)
+	assert.Equal(t, "two", root.Commands()[1].Use)
+}
 
 func TestMountProviders_MountsAllProvidersCommands(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 
-	p1 := fakeProvider{cmds: []*cobra.Command{
-		{Use: "one", RunE: func(*cobra.Command, []string) error { return nil }},
-	}}
-	p2 := fakeProvider{cmds: []*cobra.Command{
-		{Use: "two", RunE: func(*cobra.Command, []string) error { return nil }},
-		{Use: "three", RunE: func(*cobra.Command, []string) error { return nil }},
-	}}
+	p1 := fakeProvider{mounts: []Mount{{Cmd: newCmd("one")}}}
+	p2 := fakeProvider{mounts: []Mount{{Cmd: newCmd("two")}, {Cmd: newCmd("three")}}}
 
-	MountProviders(root, p1, p2)
+	err := MountProviders(root, p1, p2)
+	require.NoError(t, err)
 
 	names := make(map[string]bool)
 	for _, c := range root.Commands() {
@@ -60,13 +152,13 @@ func TestHostNamespaceCmd_BuildsRunlessParentWithChildren(t *testing.T) {
 func TestMountProviders_NilProviderIsSkippedSafely(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 
-	p := fakeProvider{cmds: []*cobra.Command{
-		{Use: "one", RunE: func(*cobra.Command, []string) error { return nil }},
-	}}
+	p := fakeProvider{mounts: []Mount{{Cmd: newCmd("one")}}}
 
+	var err error
 	assert.NotPanics(t, func() {
-		MountProviders(root, nil, p)
+		err = MountProviders(root, nil, p)
 	})
+	require.NoError(t, err)
 
 	found := false
 	for _, c := range root.Commands() {
@@ -82,10 +174,26 @@ func TestMountProviders_ProviderWithNoCommandsIsNoop(t *testing.T) {
 
 	empty := fakeProvider{}
 
+	var err error
 	assert.NotPanics(t, func() {
-		MountProviders(root, empty)
+		err = MountProviders(root, empty)
 	})
+	require.NoError(t, err)
 	assert.Empty(t, root.Commands())
+}
+
+// TestMountProviders_PropagatesMountAllError proves a provider whose Mount
+// declares an unresolved Under path fails MountProviders loudly, instead of
+// silently dropping the mount.
+func TestMountProviders_PropagatesMountAllError(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+
+	p := fakeProvider{mounts: []Mount{{Under: []string{"nope"}, Cmd: newCmd("one")}}}
+
+	err := MountProviders(root, p)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"nope"`)
 }
 
 // TestMountProviders_DispatchesThroughNestedNamespace proves the seam
@@ -104,10 +212,11 @@ func TestMountProviders_DispatchesThroughNestedNamespace(t *testing.T) {
 	ns := HostNamespaceCmd("ns", leaf)
 
 	root := &cobra.Command{Use: "root"}
-	MountProviders(root, fakeProvider{cmds: []*cobra.Command{ns}})
+	err := MountProviders(root, fakeProvider{mounts: []Mount{{Cmd: ns}}})
+	require.NoError(t, err)
 
 	root.SetArgs([]string{"ns", "leaf"})
-	err := root.Execute()
+	err = root.Execute()
 
 	require.NoError(t, err)
 	assert.True(t, ran, "the nested leaf's RunE must execute via root.Execute()")
