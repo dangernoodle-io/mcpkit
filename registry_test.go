@@ -262,7 +262,7 @@ func TestRegistryLockGroupPreStartSkipsAtFinalize(t *testing.T) {
 // Lock genuinely unregisters the group's tools against the live server (via
 // mcpx.Server.RemoveTools) and clears the byGroup bookkeeping.
 func TestRegistryLockGroupPostStartRemovesAndClearsByGroup(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "lock-post-start", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "lock-post-start", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{Name: "hw-tool"}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
 		return nil, struct{}{}, nil
 	})

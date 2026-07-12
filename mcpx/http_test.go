@@ -21,7 +21,7 @@ type httpEchoOut struct {
 
 func newHTTPEchoServer(t *testing.T) *Server {
 	t.Helper()
-	srv := NewServer(Implementation{Name: "http-test-server", Version: "0.0.1"}, "")
+	srv := NewServer(Implementation{Name: "http-test-server", Version: "0.0.1"}, "", 0)
 	AddTool(srv, &Tool{
 		Name:        "echo",
 		Description: "echoes text back",

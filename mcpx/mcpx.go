@@ -8,6 +8,7 @@ package mcpx
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -54,11 +55,13 @@ type Server struct {
 // instructions is non-empty, it is advertised to clients in the
 // InitializeResult (see InitializeResult.Instructions) as guidance on how to
 // use the server and its tools; an empty string preserves the prior
-// behavior of passing nil ServerOptions.
-func NewServer(impl Implementation, instructions string) *Server {
+// behavior of passing nil ServerOptions. If keepAlive is > 0, go-sdk pings
+// each session's peer on that interval and closes the session on
+// ping-failure; 0 disables keepalive (the default).
+func NewServer(impl Implementation, instructions string, keepAlive time.Duration) *Server {
 	var opts *mcp.ServerOptions
-	if instructions != "" {
-		opts = &mcp.ServerOptions{Instructions: instructions}
+	if instructions != "" || keepAlive > 0 {
+		opts = &mcp.ServerOptions{Instructions: instructions, KeepAlive: keepAlive}
 	}
 	return &Server{srv: mcp.NewServer(&impl, opts)}
 }
