@@ -25,13 +25,13 @@ type provider struct {
 	extra []*cobra.Command
 }
 
-// Commands implements cli.CommandProvider: it returns the single `claude`
-// namespace command, holding `hooks` (always) plus any extra subtrees
-// passed to NewProvider.
-func (p provider) Commands() []*cobra.Command {
+// Mounts implements cli.CommandProvider: it returns a single root-mounted
+// Mount (nil Under) holding the `claude` namespace command, which in turn
+// holds `hooks` (always) plus any extra subtrees passed to NewProvider.
+func (p provider) Mounts() []cli.Mount {
 	subs := make([]*cobra.Command, 0, 1+len(p.extra))
 	subs = append(subs, hooks.Command(p.reg))
 	subs = append(subs, p.extra...)
 
-	return []*cobra.Command{cli.HostNamespaceCmd("claude", subs...)}
+	return []cli.Mount{{Cmd: cli.HostNamespaceCmd("claude", subs...)}}
 }
