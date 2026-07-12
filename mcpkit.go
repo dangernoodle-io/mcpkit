@@ -163,6 +163,12 @@ type registry struct {
 	byGroup map[string][]string
 	started bool
 	gate    gateState
+
+	// locked tracks MC-45's runtime, per-group soft lock: distinct from
+	// gate, which is the permanent startup hard block. A locked group's
+	// pending tools stay in pending (never discarded) so a later Unlock can
+	// still register them.
+	locked map[string]bool
 }
 
 // add appends t to the pending set. Safe for concurrent Attach calls.
@@ -210,14 +216,31 @@ func (reg *registry) blockGroups(groups ...string) error {
 	return nil
 }
 
+// gateBlocked reports whether the startup gate (MC-44) hard-blocks t: its
+// risk fails ReadOnlyMode, or its group is in gate.blockedGroups. This is a
+// permanent block for the lifetime of the App — MC-45's Lock/Unlock never
+// override it. Callers must hold reg.mu.
+func (reg *registry) gateBlocked(t pendingTool) bool {
+	return (reg.gate.readOnly && t.risk != ReadOnly) || reg.gate.blockedGroups[t.group]
+}
+
+// shouldRegister reports whether t should be registered against the live
+// server right now: it must clear both the permanent startup gate and the
+// MC-45 runtime per-group lock. Callers must hold reg.mu.
+func (reg *registry) shouldRegister(t pendingTool) bool {
+	return !reg.gateBlocked(t) && !reg.locked[t.group]
+}
+
 // finalize registers every pending tool against srv exactly once, skipping
-// any tool the startup gate (MC-44) blocks on either axis: risk (readOnly)
-// or group. A gated-off tool is never registered against srv and never
-// recorded in byGroup, so it can't appear in tools/list, can't be called,
-// and (per MC-44's hard-block contract) can't later be resurrected by
-// MC-45's runtime Unlock. finalize is idempotent: a second call (e.g. Run
-// then Connect, or Run called twice) is a guarded no-op rather than
-// double-registering or panicking.
+// any tool shouldRegister excludes: a gate (MC-44) hard block, or a
+// pre-start MC-45 Lock on its group. A gated-off tool is never registered
+// against srv and never recorded in byGroup, so it can't appear in
+// tools/list, can't be called, and (per MC-44's hard-block contract) can't
+// later be resurrected by MC-45's runtime Unlock. A locked-but-not-blocked
+// tool is likewise skipped here but stays in pending, so Unlock can register
+// it later. finalize is idempotent: a second call (e.g. Run then Connect, or
+// Run called twice) is a guarded no-op rather than double-registering or
+// panicking.
 func (reg *registry) finalize(srv *mcpx.Server) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -232,13 +255,79 @@ func (reg *registry) finalize(srv *mcpx.Server) {
 	}
 
 	for _, t := range reg.pending {
-		blocked := (reg.gate.readOnly && t.risk != ReadOnly) || reg.gate.blockedGroups[t.group]
-		if blocked {
+		if !reg.shouldRegister(t) {
 			continue
 		}
 		t.register(srv)
 		reg.byGroup[t.group] = append(reg.byGroup[t.group], t.name)
 	}
+}
+
+// lockGroup implements MC-45's runtime App.Lock: it hard-disables group on
+// the live server. If group is startup-gate-hard-blocked (MC-44), Lock
+// returns an error rather than pretending to toggle an already-permanent
+// block. Otherwise it marks group locked and, if the registry has already
+// started, removes its currently-registered tools from srv (firing
+// notifications/tools/list_changed via mcpx.Server.RemoveTools) and clears
+// its byGroup bucket. Locking an already-locked group is a no-op. Safe to
+// call before or after finalize.
+func (reg *registry) lockGroup(srv *mcpx.Server, group string) error {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	if reg.gate.blockedGroups[group] {
+		return fmt.Errorf("mcpkit: group %q is hard-blocked by the startup gate; Lock has no effect", group)
+	}
+
+	if reg.locked == nil {
+		reg.locked = make(map[string]bool)
+	}
+	if reg.locked[group] {
+		return nil
+	}
+	reg.locked[group] = true
+
+	if reg.started {
+		if names := reg.byGroup[group]; len(names) > 0 {
+			srv.RemoveTools(names...)
+		}
+		delete(reg.byGroup, group)
+	}
+	return nil
+}
+
+// unlockGroup implements MC-45's runtime App.Unlock: it reverses lockGroup.
+// If group is startup-gate-hard-blocked (MC-44), Unlock returns an error —
+// a hard block always wins and cannot be runtime-toggled. Otherwise it
+// clears group's lock and, if the registry has already started, registers
+// every one of group's pending tools that shouldRegister still allows
+// (i.e. not gate-blocked — this is what keeps a ReadOnlyMode-blocked Write
+// tool from being resurrected) against srv, recording each in byGroup.
+// Unlocking an already-unlocked group is a no-op. Safe to call before or
+// after finalize.
+func (reg *registry) unlockGroup(srv *mcpx.Server, group string) error {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	if reg.gate.blockedGroups[group] {
+		return fmt.Errorf("mcpkit: group %q is hard-blocked by the startup gate; Unlock has no effect", group)
+	}
+
+	if !reg.locked[group] {
+		return nil
+	}
+	reg.locked[group] = false
+
+	if reg.started {
+		for _, t := range reg.pending {
+			if t.group != group || reg.gateBlocked(t) {
+				continue
+			}
+			t.register(srv)
+			reg.byGroup[group] = append(reg.byGroup[group], t.name)
+		}
+	}
+	return nil
 }
 
 // Capability is a self-contained unit of server functionality, attached to
@@ -299,6 +388,29 @@ func (a *App) Gate(opts ...GateOption) error {
 // before Run/Connect/HTTPHandler, or it returns an error.
 func (a *App) BlockGroups(groups ...string) error {
 	return a.reg.blockGroups(groups...)
+}
+
+// Lock hard-disables group g on a's live server at runtime: any of g's
+// currently-registered tools are removed (firing
+// notifications/tools/list_changed) and g's pending tools are skipped for
+// registration until a matching Unlock. Lock returns an error if g is
+// hard-blocked by the startup gate (Gate/BlockGroups) — a hard block always
+// wins and can't be runtime-toggled. Lock is idempotent and may be called
+// before or after Run/Connect/HTTPHandler, which is what lets a consumer
+// start a group locked (the lazy tier) and unlock it mid-session.
+func (a *App) Lock(group string) error {
+	return a.reg.lockGroup(a.server, group)
+}
+
+// Unlock reverses Lock: every one of group's pending tools not otherwise
+// hard-blocked by the startup gate is registered against a's live server
+// (firing notifications/tools/list_changed once the app has started). A
+// tool the startup gate hard-blocks (e.g. a Write tool under ReadOnlyMode)
+// is never resurrected by Unlock. Unlock returns an error if group is
+// hard-blocked by the startup gate. Unlock is idempotent and may be called
+// before or after Run/Connect/HTTPHandler.
+func (a *App) Unlock(group string) error {
+	return a.reg.unlockGroup(a.server, group)
 }
 
 // Run serves the app over its host's transport until the client disconnects
