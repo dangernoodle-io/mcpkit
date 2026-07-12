@@ -71,10 +71,17 @@ type GateOption func(*gateState)
 
 // gateState holds the startup-gate predicates registry.finalize evaluates
 // per pending tool. Its zero value blocks nothing, preserving MC-43's
-// register-everything behavior for an App that never calls Gate/BlockGroups.
+// register-everything behavior for an App that never calls
+// Gate/BlockGroups/BlockTools.
 type gateState struct {
 	readOnly      bool
 	blockedGroups map[string]bool
+
+	// blockedTools is MC-49's third gate axis: a per-tool-name hard block,
+	// alongside the risk (readOnly) and group (blockedGroups) axes. Runtime
+	// per-tool lock/unlock (mirroring MC-45's group-level Lock/Unlock) is
+	// deliberately out of scope here; this is startup-only.
+	blockedTools map[string]bool
 }
 
 // ReadOnlyMode is a GateOption that hard-blocks every pending tool whose
@@ -216,12 +223,36 @@ func (reg *registry) blockGroups(groups ...string) error {
 	return nil
 }
 
-// gateBlocked reports whether the startup gate (MC-44) hard-blocks t: its
-// risk fails ReadOnlyMode, or its group is in gate.blockedGroups. This is a
-// permanent block for the lifetime of the App — MC-45's Lock/Unlock never
-// override it. Callers must hold reg.mu.
+// blockTools hard-blocks the named tools at startup, same pre-start-only
+// contract as applyGate/blockGroups. This is MC-49's per-tool-name gate axis:
+// a blocked tool is never registered against the underlying server and,
+// because gateBlocked is what shouldRegister/unlockGroup both route through,
+// it can't later be resurrected by MC-45's Unlock (hard-block-wins, same
+// invariant BlockGroups already gives per-group).
+func (reg *registry) blockTools(names ...string) error {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
+	if reg.started {
+		return fmt.Errorf("mcpkit: BlockTools must be called before Run/Connect/HTTPHandler")
+	}
+
+	if reg.gate.blockedTools == nil {
+		reg.gate.blockedTools = make(map[string]bool)
+	}
+	for _, name := range names {
+		reg.gate.blockedTools[name] = true
+	}
+	return nil
+}
+
+// gateBlocked reports whether the startup gate (MC-44/MC-49) hard-blocks t:
+// its risk fails ReadOnlyMode, its group is in gate.blockedGroups, or its
+// name is in gate.blockedTools. This is a permanent block for the lifetime
+// of the App — MC-45's Lock/Unlock never override it. Callers must hold
+// reg.mu.
 func (reg *registry) gateBlocked(t pendingTool) bool {
-	return (reg.gate.readOnly && t.risk != ReadOnly) || reg.gate.blockedGroups[t.group]
+	return (reg.gate.readOnly && t.risk != ReadOnly) || reg.gate.blockedGroups[t.group] || reg.gate.blockedTools[t.name]
 }
 
 // shouldRegister reports whether t should be registered against the live
@@ -388,6 +419,16 @@ func (a *App) Gate(opts ...GateOption) error {
 // before Run/Connect/HTTPHandler, or it returns an error.
 func (a *App) BlockGroups(groups ...string) error {
 	return a.reg.blockGroups(groups...)
+}
+
+// BlockTools hard-blocks every pending tool named in names: it is never
+// registered against the underlying server. Same pre-start-only contract as
+// Gate/BlockGroups — must be called before Run/Connect/HTTPHandler, or it
+// returns an error. This is a per-tool-name complement to BlockGroups; there
+// is no runtime per-tool Lock/Unlock (mirroring MC-45's group-level ones) —
+// that is deliberately out of scope here.
+func (a *App) BlockTools(names ...string) error {
+	return a.reg.blockTools(names...)
 }
 
 // Lock hard-disables group g on a's live server at runtime: any of g's

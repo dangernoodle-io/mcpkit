@@ -119,3 +119,90 @@ func TestGateAfterConnectErrors(t *testing.T) {
 	// The already-registered set must be unchanged by the rejected calls.
 	testkit.AssertToolSet(t, h, "ro", "write", "destructive")
 }
+
+// namedToolCap registers two ungrouped ReadOnly tools by name, for the
+// MC-49 BlockTools tests.
+type namedToolCap struct{}
+
+func (namedToolCap) Attach(r *mcpkit.Registrar) error {
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "x", Description: "d"}, mcpkit.ReadOnly, gateHandler)
+	mcpkit.AddTool(r, &mcpx.Tool{Name: "y", Description: "d"}, mcpkit.ReadOnly, gateHandler)
+	return nil
+}
+
+// TestBlockToolsExcludesNamedTool proves BlockTools hard-blocks a tool by
+// name while leaving other tools advertised.
+func TestBlockToolsExcludesNamedTool(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "block-tools", Version: "0.0.1"}, generic.New(), namedToolCap{})
+	require.NoError(t, err)
+
+	require.NoError(t, app.BlockTools("x"))
+
+	h := testkit.New(t, app)
+	testkit.AssertToolSet(t, h, "y")
+}
+
+// TestBlockToolsExcludesFromByGroup proves a name-blocked tool is excluded
+// from finalize's byGroup bookkeeping too, mirroring
+// TestBlockGroupsExcludesNamedGroup: it never registers, so a group
+// containing it never picks it up in byGroup either.
+func TestBlockToolsExcludesFromByGroup(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "block-tools-group", Version: "0.0.1"}, generic.New(), groupGateCap{})
+	require.NoError(t, err)
+
+	require.NoError(t, app.BlockTools("x-tool"))
+
+	h := testkit.New(t, app)
+	testkit.AssertToolSet(t, h, "y-tool", "ungrouped")
+}
+
+// TestBlockToolsHardBlockWinsOverUnlock proves a name-blocked tool that is
+// also a member of a group cannot be resurrected by MC-45's Unlock: the
+// name block is permanent, same invariant BlockGroups already gives at the
+// group level.
+func TestBlockToolsHardBlockWinsOverUnlock(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "block-tools-unlock", Version: "0.0.1"}, generic.New(), hwGroupCap{})
+	require.NoError(t, err)
+
+	require.NoError(t, app.BlockTools("hw-tool"))
+
+	h := testkit.New(t, app)
+	testkit.AssertToolSet(t, h, "ungrouped-tool")
+
+	require.NoError(t, app.Lock("hw"))
+	require.NoError(t, app.Unlock("hw"))
+	testkit.AssertToolSet(t, h, "ungrouped-tool")
+}
+
+// TestBlockToolsAfterConnectErrors proves BlockTools is pre-start-only: a
+// call after the App has already finalized registration returns the
+// documented error and does not change the already-registered tool set.
+func TestBlockToolsAfterConnectErrors(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "block-tools-late", Version: "0.0.1"}, generic.New(), namedToolCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+	testkit.AssertToolSet(t, h, "x", "y")
+
+	require.Error(t, app.BlockTools("x"))
+
+	testkit.AssertToolSet(t, h, "x", "y")
+}
+
+// TestBlockToolsCombinesWithBlockGroupsAndReadOnly proves all three gate
+// axes (name, group, risk) compose: a tool blocked by any single axis stays
+// out, and a tool that clears all three still advertises.
+func TestBlockToolsCombinesWithBlockGroupsAndReadOnly(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "block-tools-combo", Version: "0.0.1"}, generic.New(), mixedGateCap{})
+	require.NoError(t, err)
+
+	require.NoError(t, app.Gate(mcpkit.ReadOnlyMode()))
+	require.NoError(t, app.BlockGroups("y"))
+	require.NoError(t, app.BlockTools("ro-x"))
+
+	h := testkit.New(t, app)
+	// ro-x: ReadOnly, group x (not blocked), but name-blocked -> excluded.
+	// ro-y: ReadOnly, but group y (blocked) -> excluded.
+	// write-y: Write (blocked by ReadOnlyMode) and group y (blocked) -> excluded.
+	testkit.AssertToolSet(t, h)
+}
