@@ -7,6 +7,12 @@ package host
 import "github.com/dangernoodle-io/mcpkit/mcpx"
 
 // Adapter binds mcpkit's composition root to a specific MCP host.
+//
+// host/cursor and host/generic are minimal stdio stubs: they only satisfy
+// this interface and carry no host-specific behavior. The real Claude Code
+// host integration — the hooks command tree today, with the statusline
+// command tree as a forward-compatible extension point — lives in
+// host/claudecode and is mounted via claudecode.NewProvider.
 type Adapter interface {
 	// Name identifies the host, e.g. "generic", "claude-code", "cursor".
 	Name() string
