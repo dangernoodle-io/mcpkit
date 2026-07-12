@@ -28,6 +28,10 @@
 // built-in risk-gating axis. --read-only, --http, and --stateless are all
 // reserved flag names: a Server.Flags registration of any of them collides
 // and pflag panics at command construction.
+//
+// Server.ReadOnlyEnv opts a built command into also entering read-only mode
+// when that named environment variable is set to a truthy value, OR'd with
+// --read-only — see Server.ReadOnlyEnv's doc comment.
 package cli
 
 import (
@@ -36,6 +40,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/dangernoodle-io/mcpkit"
@@ -80,6 +85,14 @@ type Server struct {
 	// flag names "http" and "stateless": a Server.Flags registration of
 	// either name collides and pflag panics at command construction.
 	HTTP *ServerHTTP
+
+	// ReadOnlyEnv, if non-empty, names an environment variable that also
+	// puts the built server command into read-only mode when set to a
+	// truthy value (1/true/yes/on, case-insensitive, surrounding
+	// whitespace trimmed), OR'd with the --read-only flag: either one
+	// alone is enough to gate. Empty (the default) means flag-only —
+	// behavior is byte-identical to a Server with no ReadOnlyEnv set.
+	ReadOnlyEnv string
 }
 
 // ServerHTTP configures optional HTTP serving for the server command. When
@@ -128,7 +141,8 @@ func ServerCmd(s Server) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			if readOnly {
+			ro := readOnly || (s.ReadOnlyEnv != "" && envTruthy(os.Getenv(s.ReadOnlyEnv)))
+			if ro {
 				if err := s.App.Gate(mcpkit.ReadOnlyMode()); err != nil {
 					return err
 				}
@@ -254,4 +268,16 @@ func runLifecycle(ctx context.Context, run, onStart, onShutdown func(context.Con
 func UseAsDefault(root, cmd *cobra.Command) {
 	root.RunE = cmd.RunE
 	root.Flags().AddFlagSet(cmd.Flags())
+}
+
+// envTruthy reports whether raw (an environment variable's value, trimmed
+// and lowercased) is one of the truthy tokens: "1", "true", "yes", "on".
+// Everything else, including the empty string, is false.
+func envTruthy(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

@@ -719,6 +719,141 @@ func TestServerCmd_ReadOnlyFlagCollisionPanics(t *testing.T) {
 	})
 }
 
+// TestEnvTruthy is a table test over envTruthy's truthy/falsy tokens.
+func TestEnvTruthy(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"TRUE", true},
+		{"yes", true},
+		{"on", true},
+		{"  true  ", true},
+		{"0", false},
+		{"false", false},
+		{"", false},
+		{"garbage", false},
+	}
+
+	for _, c := range cases {
+		assert.Equal(t, c.want, envTruthy(c.raw), "envTruthy(%q)", c.raw)
+	}
+}
+
+// TestServerCmd_RunE_ReadOnlyEnvGatesTools proves a truthy ReadOnlyEnv value
+// gates tools identically to --read-only, with no --read-only flag given.
+func TestServerCmd_RunE_ReadOnlyEnvGatesTools(t *testing.T) {
+	t.Setenv("POGO_TEST_RO", "1")
+
+	app, clientT := buildGatedApp(t)
+
+	cmd := ServerCmd(Server{App: app, ReadOnlyEnv: "POGO_TEST_RO"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro"}, got, "truthy ReadOnlyEnv must exclude the Destructive tool")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_ReadOnlyEnvUnsetOrFalsy_AdvertisesEverything proves the
+// env gate is opt-in: with ReadOnlyEnv configured but the variable unset (or
+// set to a falsy value), both tools are advertised.
+func TestServerCmd_RunE_ReadOnlyEnvUnsetOrFalsy_AdvertisesEverything(t *testing.T) {
+	cases := []struct {
+		name   string
+		setEnv bool
+		envVal string
+	}{
+		{name: "unset", setEnv: false},
+		{name: "zero", setEnv: true, envVal: "0"},
+		{name: "false", setEnv: true, envVal: "false"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.setEnv {
+				t.Setenv("POGO_TEST_RO", c.envVal)
+			}
+
+			app, clientT := buildGatedApp(t)
+
+			cmd := ServerCmd(Server{App: app, ReadOnlyEnv: "POGO_TEST_RO"})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cmd.SetContext(ctx)
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+			got := listToolNames(t, clientT)
+
+			assert.ElementsMatch(t, []string{"ro", "destructive"}, got)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
+}
+
+// TestServerCmd_RunE_ReadOnlyEnvEmpty_IgnoresEnvVar proves an empty
+// ReadOnlyEnv (the default) never consults any environment variable, even
+// one that happens to be set truthy under the same name a caller might use.
+func TestServerCmd_RunE_ReadOnlyEnvEmpty_IgnoresEnvVar(t *testing.T) {
+	t.Setenv("POGO_TEST_RO", "1")
+
+	app, clientT := buildGatedApp(t)
+
+	cmd := ServerCmd(Server{App: app})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro", "destructive"}, got, "empty ReadOnlyEnv must ignore the env var entirely")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestServerCmd_RunE_ReadOnlyFlagAndEnvBothSet_GatesOnce proves flag+env both
+// truthy still gates cleanly (Gate is called at most once per RunE
+// invocation by construction — a single "if ro" branch, not two).
+func TestServerCmd_RunE_ReadOnlyFlagAndEnvBothSet_GatesOnce(t *testing.T) {
+	t.Setenv("POGO_TEST_RO", "1")
+
+	app, clientT := buildGatedApp(t)
+
+	cmd := ServerCmd(Server{App: app, ReadOnlyEnv: "POGO_TEST_RO"})
+	require.NoError(t, cmd.Flags().Set("read-only", "true"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.RunE(cmd, nil) }()
+
+	got := listToolNames(t, clientT)
+
+	assert.ElementsMatch(t, []string{"ro"}, got)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 // TestUseAsDefault_ReadOnlyFlagGatesTools proves --read-only also gates on a
 // BARE root invocation via UseAsDefault's flag copy, not just on the
 // explicit `server` subcommand.

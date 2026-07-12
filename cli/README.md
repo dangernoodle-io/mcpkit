@@ -31,6 +31,10 @@ built-in risk-gating axis. --read-only, --http, and --stateless are all
 reserved flag names: a Server.Flags registration of any of them collides
 and pflag panics at command construction.
 
+Server.ReadOnlyEnv opts a built command into also entering read-only mode
+when that named environment variable is set to a truthy value, OR'd with
+--read-only — see Server.ReadOnlyEnv's doc comment.
+
 ## Reference
 
 - API: <https://pkg.go.dev/github.com/dangernoodle-io/mcpkit/cli>
