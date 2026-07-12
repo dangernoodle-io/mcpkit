@@ -3,13 +3,30 @@ package hooks
 import "encoding/json"
 
 // Common fields are present on every Claude Code hook invocation's stdin
-// JSON, per Claude Code's documented hook input schema.
+// JSON, per Claude Code's documented hook input schema. Most fields are
+// decoded from that stdin JSON; ProjectDir is the exception — it is
+// env-sourced (see its doc comment) and never set from stdin.
 type Common struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	Cwd            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
+	PromptID       string `json:"prompt_id"`
+	PermissionMode string `json:"permission_mode"`
+	Effort         string `json:"effort"`
+
+	// ProjectDir is the authoritative project root Claude Code exports as
+	// the CLAUDE_PROJECT_DIR environment variable to every hook process —
+	// it is NOT a stdin field. The framework populates it before dispatch
+	// (see leaf in cmd.go); the json:"-" tag keeps stdin JSON from ever
+	// setting it.
+	ProjectDir string `json:"-"`
 }
+
+// commonPtr returns a pointer to the embedded Common, letting the framework
+// set env-sourced fields (ProjectDir) on a decoded payload of any event type
+// without per-type code. Every *Payload promotes this via its embedded Common.
+func (c *Common) commonPtr() *Common { return c }
 
 // StopPayload is the Stop event's stdin payload.
 type StopPayload struct {
