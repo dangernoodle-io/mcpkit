@@ -4,8 +4,10 @@
 // GetJSON/SetJSON helpers layer this over the store.Store seam (MC-15), so
 // consumers stop hand-encoding JSON blobs into store string values.
 //
-// An HTTP JSON-response helper (for the MC-6 HTTP-mux case) is deliberately
-// out of scope here; that lands with MC-6.
+// An HTTP JSON-response helper is deliberately out of scope here — that's
+// httpx.WriteJSON (MC-6), which calls Marshal internally, keeping this
+// package encoding/json-pure for its non-HTTP consumers (store, testkit,
+// hooks).
 package jsonutil
 
 import (
