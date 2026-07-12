@@ -37,3 +37,45 @@ func TestToolAnnotationsAlias(t *testing.T) {
 	require.NotNil(t, ann.OpenWorldHint)
 	require.True(t, *ann.OpenWorldHint)
 }
+
+// TestRiskAnnotations proves RiskAnnotations maps the three risk classes a
+// caller uses (read, write, destructive) to the expected ReadOnlyHint and
+// DestructiveHint values.
+func TestRiskAnnotations(t *testing.T) {
+	tests := map[string]struct {
+		readOnly        bool
+		destructive     bool
+		wantReadOnly    bool
+		wantDestructive bool
+	}{
+		"read": {
+			readOnly:        true,
+			destructive:     false,
+			wantReadOnly:    true,
+			wantDestructive: false,
+		},
+		"write": {
+			readOnly:        false,
+			destructive:     false,
+			wantReadOnly:    false,
+			wantDestructive: false,
+		},
+		"destructive": {
+			readOnly:        false,
+			destructive:     true,
+			wantReadOnly:    false,
+			wantDestructive: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ann := mcpx.RiskAnnotations(tc.readOnly, tc.destructive)
+
+			require.NotNil(t, ann)
+			require.Equal(t, tc.wantReadOnly, ann.ReadOnlyHint)
+			require.NotNil(t, ann.DestructiveHint)
+			require.Equal(t, tc.wantDestructive, *ann.DestructiveHint)
+		})
+	}
+}
