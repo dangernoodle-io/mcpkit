@@ -38,6 +38,17 @@ func EventuallyContains(t testing.TB, timeout, interval time.Duration, fn func()
 	}, timeout, interval, "expected %q to eventually appear", want)
 }
 
+// AssertToolListChanged fails the test unless the harness observes at least
+// one notifications/tools/list_changed notification within timeout. The
+// go-sdk debounces rapid successive list changes into a single
+// notification, so this asserts "at least one arrived," never an exact
+// count.
+func AssertToolListChanged(t testing.TB, h *Harness, timeout time.Duration) {
+	t.Helper()
+	require.True(t, h.WaitForToolListChanged(timeout),
+		"expected a tools/list_changed notification within %s", timeout)
+}
+
 // AssertToolSet asserts that the app's advertised tools/list is exactly
 // want, guarding against silent drift.
 func AssertToolSet(t testing.TB, h *Harness, want ...string) {

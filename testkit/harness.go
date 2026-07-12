@@ -7,6 +7,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dangernoodle-io/mcpkit"
 	"github.com/dangernoodle-io/mcpkit/mcpx"
@@ -28,6 +29,15 @@ type Harness struct {
 
 	mu       sync.Mutex
 	progress map[any][]ProgressEvent
+
+	// toolListChanged is signaled (non-blocking) each time the client
+	// receives a notifications/tools/list_changed notification. Buffered so
+	// the client's receive goroutine never blocks on a slow/absent waiter;
+	// callers only need to observe that at least one arrived within a
+	// timeout, not an exact count (the go-sdk debounces bursts ~10ms apart
+	// into a single notification, so an exact-count assertion would be
+	// flaky by design).
+	toolListChanged chan struct{}
 }
 
 // New composes app over an in-memory transport pair, connects a client, and
@@ -46,10 +56,15 @@ func New(t testing.TB, app *mcpkit.App) *Harness {
 		_ = srvSess.Close()
 	})
 
-	h := &Harness{t: t, progress: make(map[any][]ProgressEvent)}
+	h := &Harness{
+		t:               t,
+		progress:        make(map[any][]ProgressEvent),
+		toolListChanged: make(chan struct{}, 8),
+	}
 
 	client := mcpx.NewClient(mcpx.Implementation{Name: "testkit", Version: "0.0.0"}, &mcpx.ClientOptions{
-		OnProgress: h.recordProgress,
+		OnProgress:        h.recordProgress,
+		OnToolListChanged: h.recordToolListChanged,
 	})
 
 	sess, err := client.Connect(ctx, clientT)
@@ -72,6 +87,31 @@ func (h *Harness) recordProgress(_ context.Context, token any, message string, p
 		Progress: progress,
 		Total:    total,
 	})
+}
+
+// recordToolListChanged runs on the client's receive goroutine; it must
+// never block, so the signal is a non-blocking send into a buffered
+// channel.
+func (h *Harness) recordToolListChanged(_ context.Context) {
+	select {
+	case h.toolListChanged <- struct{}{}:
+	default:
+	}
+}
+
+// WaitForToolListChanged blocks until the harness observes at least one
+// notifications/tools/list_changed notification, or timeout elapses. It
+// returns true on the former, false on the latter. Because the go-sdk
+// debounces bursts of list changes into a single notification (~10ms),
+// callers should not assert an exact count — one call observes "at least
+// one arrived."
+func (h *Harness) WaitForToolListChanged(timeout time.Duration) bool {
+	select {
+	case <-h.toolListChanged:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // CallTool calls the named tool with args, which must be JSON-marshalable.

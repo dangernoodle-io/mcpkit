@@ -32,53 +32,23 @@ func (hwGroupCap) Attach(r *mcpkit.Registrar) error {
 // TestLockBeforeConnectThenUnlockAtRuntime proves the lazy-tier mechanism:
 // locking a group before the app ever connects keeps that group's tools out
 // of the very first tools/list, and a runtime Unlock later brings them in
-// and notifies the connected client via
-// notifications/tools/list_changed (observed here through mcpx.Client's
-// OnToolListChanged, since that requires a raw mcpx client rather than
-// testkit's harness).
+// and notifies the connected client via notifications/tools/list_changed
+// (observed here via testkit.AssertToolListChanged, MC-47).
 func TestLockBeforeConnectThenUnlockAtRuntime(t *testing.T) {
 	app, err := mcpkit.New(mcpkit.Info{Name: "lazy-tier", Version: "0.0.1"}, generic.New(), hwGroupCap{})
 	require.NoError(t, err)
 
 	require.NoError(t, app.Lock("hw"))
 
-	ctx := context.Background()
-	serverT, clientT := mcpx.InMemoryPair()
+	h := testkit.New(t, app)
 
-	srvSess, err := app.Connect(ctx, serverT)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srvSess.Close() })
-
-	changed := make(chan struct{}, 4)
-	client := mcpx.NewClient(mcpx.Implementation{Name: "lazy-tier-client", Version: "0.0.1"}, &mcpx.ClientOptions{
-		OnToolListChanged: func(_ context.Context) {
-			changed <- struct{}{}
-		},
-	})
-	clientSess, err := client.Connect(ctx, clientT)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = clientSess.Close() })
-
-	tools, err := clientSess.ListTools(ctx)
-	require.NoError(t, err)
-	require.Len(t, tools.Tools, 1, "locked group's tool must not appear in the initial tools/list")
-	require.Equal(t, "ungrouped-tool", tools.Tools[0].Name)
+	testkit.AssertToolSet(t, h, "ungrouped-tool")
 
 	require.NoError(t, app.Unlock("hw"))
 
-	select {
-	case <-changed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("did not receive tool list changed notification after Unlock")
-	}
+	testkit.AssertToolListChanged(t, h, 5*time.Second)
 
-	tools, err = clientSess.ListTools(ctx)
-	require.NoError(t, err)
-	names := make([]string, 0, len(tools.Tools))
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	require.ElementsMatch(t, []string{"hw-tool", "ungrouped-tool"}, names, "Unlock must bring the group's tool into tools/list")
+	testkit.AssertToolSet(t, h, "hw-tool", "ungrouped-tool")
 }
 
 // TestLockAtRuntimeUnregistersTool proves a runtime Lock (called after the
