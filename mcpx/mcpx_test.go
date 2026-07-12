@@ -18,7 +18,7 @@ type echoOut struct {
 }
 
 func TestServerClientRoundTrip(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "test-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "test-server", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name:        "echo",
 		Description: "echoes text back",
@@ -54,7 +54,7 @@ func TestServerClientRoundTrip(t *testing.T) {
 // off req via ProgressToken/NotifyProgress, and the client's OnProgress
 // callback receives that same token.
 func TestNotifyProgress(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "progress-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "progress-server", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "work",
 	}, func(ctx context.Context, req *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -106,7 +106,7 @@ func TestNotifyProgress(t *testing.T) {
 // reaches the client via the InitializeResult, and that a non-empty value
 // composes without error.
 func TestServerInstructions(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "instructions-server", Version: "0.0.1"}, "call echo before anything else")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "instructions-server", Version: "0.0.1"}, "call echo before anything else", 0)
 
 	serverT, clientT := mcpx.InMemoryPair()
 
@@ -125,12 +125,36 @@ func TestServerInstructions(t *testing.T) {
 	require.Equal(t, "call echo before anything else", res.Instructions)
 }
 
-// TestServerNoInstructions proves NewServer(impl, "") is behaviorally
+// TestServerKeepAlive proves a non-zero keepAlive reaches the underlying
+// mcp.ServerOptions.KeepAlive without breaking composition or a normal
+// client round trip (MC-48). go-sdk's actual ping/close-on-failure behavior
+// is go-sdk's own tested concern; this only exercises the plumbing.
+func TestServerKeepAlive(t *testing.T) {
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "keepalive-server", Version: "0.0.1"}, "", 50*time.Millisecond)
+
+	serverT, clientT := mcpx.InMemoryPair()
+
+	ctx := context.Background()
+	sess, err := srv.Connect(ctx, serverT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	client := mcpx.NewClient(mcpx.Implementation{Name: "keepalive-client", Version: "0.0.1"}, nil)
+	clientSess, err := client.Connect(ctx, clientT)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = clientSess.Close() })
+
+	tools, err := clientSess.ListTools(ctx)
+	require.NoError(t, err)
+	require.Empty(t, tools.Tools)
+}
+
+// TestServerNoInstructions proves NewServer(impl, "", 0) is behaviorally
 // identical to the prior single-arg NewServer: no instructions are
-// advertised (empty string, the nil-ServerOptions path), and the server
-// still composes and serves normally.
+// advertised (empty string, the nil-ServerOptions path), keepalive is
+// disabled, and the server still composes and serves normally.
 func TestServerNoInstructions(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "no-instructions-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "no-instructions-server", Version: "0.0.1"}, "", 0)
 
 	serverT, clientT := mcpx.InMemoryPair()
 
@@ -159,7 +183,7 @@ func TestStdioTransport(t *testing.T) {
 // (*Server).Run: it must block while the client is connected, and return
 // cleanly once the client disconnects.
 func TestRunUnwindsOnClientClose(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "run-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "run-server", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "noop",
 	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -194,7 +218,7 @@ func TestRunUnwindsOnClientClose(t *testing.T) {
 // TestRemoveTools proves RemoveTools drops a previously-added tool from the
 // server's advertised tool list.
 func TestRemoveTools(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "remove-tools-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "remove-tools-server", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "gone",
 	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -231,7 +255,7 @@ func TestRemoveTools(t *testing.T) {
 // debounces list-changed notifications by 10ms, so this asserts on the
 // callback firing and the resulting tool list, not on notification count.
 func TestOnToolListChanged(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "list-changed-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "list-changed-server", Version: "0.0.1"}, "", 0)
 	mcpx.AddTool(srv, &mcpx.Tool{
 		Name: "initial",
 	}, func(_ context.Context, _ *mcpx.CallToolRequest, _ struct{}) (*mcpx.CallToolResult, struct{}, error) {
@@ -290,7 +314,7 @@ func TestOnToolListChanged(t *testing.T) {
 // counterpart to Run: it must block while the client is connected, and
 // return once the client closes.
 func TestSessionWait(t *testing.T) {
-	srv := mcpx.NewServer(mcpx.Implementation{Name: "wait-server", Version: "0.0.1"}, "")
+	srv := mcpx.NewServer(mcpx.Implementation{Name: "wait-server", Version: "0.0.1"}, "", 0)
 
 	serverT, clientT := mcpx.InMemoryPair()
 

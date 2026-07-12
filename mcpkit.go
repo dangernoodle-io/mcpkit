@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/dangernoodle-io/mcpkit/host"
 	"github.com/dangernoodle-io/mcpkit/mcpx"
@@ -21,6 +22,11 @@ type Info struct {
 	// Instructions is optional MCP server instructions advertised to
 	// clients (tool-selection guidance); empty = none.
 	Instructions string
+
+	// KeepAlive configures go-sdk's built-in server keepalive: 0 disables
+	// keepalive (default); >0 pings the client on that interval and closes
+	// the session on ping-failure.
+	KeepAlive time.Duration
 }
 
 // Risk classifies a tool's blast radius, from a client's perspective, for
@@ -383,7 +389,7 @@ func New(info Info, h host.Adapter, caps ...Capability) (*App, error) {
 		return nil, fmt.Errorf("mcpkit: host adapter must not be nil")
 	}
 
-	srv := mcpx.NewServer(mcpx.Implementation{Name: info.Name, Version: info.Version}, info.Instructions)
+	srv := mcpx.NewServer(mcpx.Implementation{Name: info.Name, Version: info.Version}, info.Instructions, info.KeepAlive)
 	reg := &registry{}
 	r := &Registrar{server: srv, host: h, reg: reg}
 

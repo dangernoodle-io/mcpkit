@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/dangernoodle-io/mcpkit"
 	"github.com/dangernoodle-io/mcpkit/host/generic"
@@ -62,6 +63,38 @@ func TestEndToEnd(t *testing.T) {
 func TestNewNilHost(t *testing.T) {
 	_, err := mcpkit.New(mcpkit.Info{Name: "e2e", Version: "0.0.1"}, nil)
 	require.Error(t, err)
+}
+
+// TestKeepAliveThreadsToServer proves Info.KeepAlive reaches mcpx.NewServer
+// (MC-48): a non-zero value composes and serves a full tools/list + tool
+// call round trip identically to the zero-value (default) path exercised by
+// TestEndToEnd.
+func TestKeepAliveThreadsToServer(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "keepalive", Version: "0.0.1", KeepAlive: 50 * time.Millisecond}, generic.New(), helloCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	testkit.AssertToolSet(t, h, "hello")
+
+	res, err := h.CallTool(context.Background(), "hello", map[string]any{"name": "keepalive"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	out := testkit.DecodeToolResult[helloOut](t, res)
+	require.Equal(t, "hello, keepalive!", out.Greeting)
+}
+
+// TestKeepAliveZeroDisabled proves Info.KeepAlive's zero value (the default)
+// preserves the prior no-keepalive behavior: a fresh App still composes and
+// serves normally.
+func TestKeepAliveZeroDisabled(t *testing.T) {
+	app, err := mcpkit.New(mcpkit.Info{Name: "no-keepalive", Version: "0.0.1"}, generic.New(), helloCap{})
+	require.NoError(t, err)
+
+	h := testkit.New(t, app)
+
+	testkit.AssertToolSet(t, h, "hello")
 }
 
 type panicIn struct{}
