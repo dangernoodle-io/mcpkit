@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/dangernoodle-io/mcpkit/jsonutil"
+	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 )
 
@@ -13,7 +14,8 @@ import (
 type Option func(*options)
 
 type options struct {
-	appPrefix string
+	appPrefix    string
+	forceProfile *termenv.Profile
 }
 
 // WithAppPrefix sets the consumer's env-var prefix (e.g. "OUROBOROS",
@@ -22,6 +24,17 @@ type options struct {
 // back to the stdin payload's session_id, then CLAUDE_CODE_SESSION_ID.
 func WithAppPrefix(prefix string) Option {
 	return func(o *options) { o.appPrefix = prefix }
+}
+
+// WithForceProfile overrides the auto-detected termenv color profile so a
+// consumer can force a color tier (e.g. termenv.ANSI) even when stdout is
+// not a TTY — Claude Code always pipes stdout, so auto-detection alone
+// yields termenv.Ascii and a colored-segment consumer (e.g. ouroboros)
+// would never get color. Omit it to keep auto-detection
+// (termenv.EnvColorProfile()). --plain still wins: it forces Ascii
+// regardless of this option.
+func WithForceProfile(p termenv.Profile) Option {
+	return func(o *options) { o.forceProfile = &p }
 }
 
 // Command builds the `statusline` leaf: reads the Claude Code statusLine
@@ -68,7 +81,7 @@ func run(cmd *cobra.Command, provider StatuslineProvider, cfg options, plain boo
 		return nil
 	}
 
-	line := Render(segments, RenderOptions{Plain: plain})
+	line := Render(segments, RenderOptions{Plain: plain, Profile: cfg.forceProfile})
 	if line == "" {
 		return nil
 	}
