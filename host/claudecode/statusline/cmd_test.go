@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dangernoodle-io/mcpkit/host/claudecode/statusline"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -165,6 +166,63 @@ func TestCommand_NonEmptySegmentsRenderingToEmptyStringPrintsNothing(t *testing.
 
 	require.NoError(t, cmd.Execute())
 	assert.Empty(t, out.String())
+}
+
+func TestCommand_WithForceProfileRendersColorOnNonTTYStdout(t *testing.T) {
+	provider := statusline.StatuslineProviderFunc(
+		func(context.Context, statusline.Payload, string) ([]statusline.Segment, error) {
+			return []statusline.Segment{{Text: "example", Color: "1"}}, nil
+		},
+	)
+
+	cmd := statusline.Command(provider, statusline.WithForceProfile(termenv.ANSI))
+	cmd.SetIn(strings.NewReader("{}"))
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), "\x1b", "WithForceProfile must force ANSI escapes despite non-TTY stdout")
+}
+
+func TestCommand_PlainFlagWinsOverForceProfile(t *testing.T) {
+	provider := statusline.StatuslineProviderFunc(
+		func(context.Context, statusline.Payload, string) ([]statusline.Segment, error) {
+			return []statusline.Segment{{Text: "example", Color: "1"}}, nil
+		},
+	)
+
+	cmd := statusline.Command(provider, statusline.WithForceProfile(termenv.TrueColor))
+	cmd.SetIn(strings.NewReader("{}"))
+	cmd.SetArgs([]string{"--plain"})
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, "example\n", out.String(), "--plain must win over WithForceProfile")
+}
+
+func TestCommand_WithoutForceProfileKeepsAutoDetection(t *testing.T) {
+	// Pin termenv.EnvColorProfile()'s auto-detection deterministically:
+	// NO_COLOR is honored unconditionally, regardless of ambient
+	// CLICOLOR_FORCE or TTY state in the process running this test.
+	t.Setenv("NO_COLOR", "1")
+
+	provider := statusline.StatuslineProviderFunc(
+		func(context.Context, statusline.Payload, string) ([]statusline.Segment, error) {
+			return []statusline.Segment{{Text: "example", Color: "1"}}, nil
+		},
+	)
+
+	cmd := statusline.Command(provider)
+	cmd.SetIn(strings.NewReader("{}"))
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	require.NoError(t, cmd.Execute())
+	assert.NotContains(t, out.String(), "\x1b", "auto-detection on non-TTY test stdout must yield Ascii (no escapes)")
 }
 
 func TestCommand_UsePlainCommandName(t *testing.T) {
